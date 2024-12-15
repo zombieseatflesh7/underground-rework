@@ -1,0 +1,12 @@
+{
+  "name": "underground-rework",
+  "version": "1.0",
+  "title": "Underground Belt Rework",
+  "author": "zombieseatflesh7",
+  "homepage": "",
+  "description": "",
+  "factorio_version": "2.0",
+  "dependencies": [
+	"base >= 2.0"
+  ]
+}
