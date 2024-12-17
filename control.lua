@@ -26,6 +26,7 @@ script.on_nth_tick(1, function()
     if itemstack and itemstack.name == transport_belts[connection.name] and itemstack.count == connection.length then
       connection.container.destroy()
       connection.container = nil
+      -- TODO: handle broken connections as a result of restarting belts
       connection.input = start_belt(connection.input)
       connection.output = start_belt(connection.output)
       storage.belt_pairs_ticking[key] = nil
@@ -51,28 +52,41 @@ script.on_event(defines.events.on_built_entity, function(event)
   
   local neighbour = entity.neighbours --connected underground
   if neighbour then
+    -- check for existing connection
+    local itemstack
+    local neighbour_connection = storage.belt_pairs[pos_string(neighbour.position)]
+    if neighbour_connection then
+      if neighbour_connection[entity.belt_to_ground_type] == entity then
+        return --duplicate connection
+      else
+        itemstack = break_connection(neighbour_connection)
+      end
+    end
+
     local player
-    if entity.type ~= "entity_ghost" then
+    if entity.type ~= "entity-ghost" then
       player = game.get_player(event.player_index)
     end
 
-    -- TODO check for existing connection
+    itemstack = new_connection(player, entity, neighbour, underground_name, itemstack)
 
-    new_connection(player, entity, neighbour, underground_name)
+    if itemstack and player then
+      player.insert(itemstack) -- does not show text / does not handle full inventory
+    end
   end
 end)
 
 function new_connection(player, entity, neighbour, underground_name, itemstack)
+  game.print("new connection from "..pos_string(entity.position).." to "..pos_string(neighbour.position))
+
   local belt_name = transport_belts[underground_name] --related transport belt prototype
 
   local entity_is_ghost = entity.name == "entity-ghost"
   local neighbour_is_ghost = neighbour.name == "entity-ghost"
 
-  -- on new connection
   local connection = {} --{input, output, name, length, container}
   storage.belt_pairs[pos_string(entity.position)] = connection
   storage.belt_pairs[pos_string(neighbour.position)] = connection
-  game.print("new connection from "..pos_string(entity.position).." to "..pos_string(neighbour.position))
   
   connection[entity.belt_to_ground_type] = entity
   connection[neighbour.belt_to_ground_type] = neighbour
@@ -138,7 +152,7 @@ function new_connection(player, entity, neighbour, underground_name, itemstack)
       container.get_inventory(defines.inventory.chest).insert(itemstack)
     end
 
-    if (belts < length) then
+    if (belts ~= length) then
       make_request(container, belt_name, length - belts) -- TODO fix this
     end
   end
@@ -146,8 +160,62 @@ function new_connection(player, entity, neighbour, underground_name, itemstack)
   return trashstack
 end
 
+function make_request(container, item, amount)
+  local proxy = {
+  name = "item-request-proxy",
+  position = container.position,
+  force = container.force,
+  target = container,
+  modules = {}
+  }
+  local request = {{
+    id = {name = item},
+    items = {in_inventory = {
+      {
+        inventory = defines.inventory.chest,
+        stack = 0,
+        count = math.abs(amount)
+      }
+    }}
+  }}
+  if amount > 0 then
+    proxy.modules = request
+  else
+    proxy.removal_plan = request
+  end
+  container.surface.create_entity(proxy)
+end
+
+function break_connection(connection)
+  game.print("breaking connection between "..pos_string(connection.input.position).." and "..pos_string(connection.output.position))
+
+  --clear storage values
+  if storage.belt_pairs_ticking[pos_string(connection.input.position)] then
+    storage.belt_pairs_ticking[pos_string(connection.input.position)] = nil
+    -- TODO: handle broken connections as a result of restarting belts
+    connection.input = start_belt(connection.input)
+    connection.output = start_belt(connection.output)
+  end
+  storage.belt_pairs[pos_string(connection.input.position)] = nil
+  storage.belt_pairs[pos_string(connection.output.position)] = nil
+
+  --return connection contents
+  local container = connection.container
+  local itemstack
+
+  if container then 
+    itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
+    container.destroy()
+  elseif connection.input.name == connection.name and connection.output.name == connection.name then
+    itemstack = {name=transport_belts[connection.name], count=connection.length}
+  end
+
+  return itemstack
+end
+
 -- when robots builds undergrounds, i check if it still needs transport belts or not
 script.on_event(defines.events.on_robot_built_entity, function(event)
+  game.print(event.entity.belt_to_ground_type)
   local entity = event.entity
   if not (entity.type == "underground-belt") then return end
 
@@ -188,8 +256,15 @@ script.on_event(defines.events.on_player_mined_entity, function(event)
   if not connection then return end
   if not (entity == connection.input or entity == connection.output or entity == connection.container) then return end
   --mined entity is part of an underground connection
+  if not (connection.input.valid and connection.output.valid) then return end
+
+  local player
+    if entity.type ~= "entity-ghost" then
+      player = game.get_player(event.player_index)
+    end
 
   --destroy connection
+  game.print("Destroying connection between "..pos_string(connection.input.position).." and "..pos_string(connection.output.position))
   local stopped = false
   if storage.belt_pairs_ticking[pos_string(connection.input.position)] then
     storage.belt_pairs_ticking[pos_string(connection.input.position)] = nil
@@ -233,10 +308,6 @@ script.on_event(defines.events.on_player_mined_entity, function(event)
   end
 end)
 
-function destroy_connection(connection)
-
-end
-
 script.on_event(defines.events.on_robot_mined_entity, function(event)
   --underground_removed(event.entity, event.buffer)
 end)
@@ -265,23 +336,4 @@ function start_belt(entity)
     fast_replace = true,
     spill = false
   }
-end
-
-function make_request(container, item, amount)
-  container.surface.create_entity{
-    name = "item-request-proxy",
-    position = container.position,
-    force = container.force,
-    target = container,
-    modules = {{
-        id = {name = item},
-        items = {in_inventory = {
-          {
-            inventory = defines.inventory.chest,
-            stack = 0,
-            count = amount
-          }
-        }}
-      }}
-    }
 end
