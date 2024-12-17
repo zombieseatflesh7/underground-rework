@@ -42,81 +42,108 @@ script.on_event(defines.events.on_built_entity, function(event)
   local entity = event.entity
   local underground_name = entity.name --prototype name
 
-  local is_ghost
   if underground_name == "entity-ghost" and entity.ghost_type == "underground-belt" then
-    is_ghost = true
     underground_name = entity.ghost_name
   elseif not (entity.type == "underground-belt") then
     return
   end
   -- entity is an underground belt or a ghost of one
   
-  local belt_name = transport_belts[underground_name] --related transport belt prototype
   local neighbour = entity.neighbours --connected underground
-  
   if neighbour then
-    local neighbour_is_ghost = neighbour.name == "entity-ghost"
+    local player
+    if entity.type ~= "entity_ghost" then
+      player = game.get_player(event.player_index)
+    end
+
     -- TODO check for existing connection
 
-    -- on new connection
-    local connection = {} --{input, output, name, length, container}
-    storage.belt_pairs[pos_string(entity.position)] = connection
-    storage.belt_pairs[pos_string(neighbour.position)] = connection
-    game.print(event.tick.." new connection from "..pos_string(entity.position).." to "..pos_string(neighbour.position))
-    
-    connection[entity.belt_to_ground_type] = entity
-    connection[neighbour.belt_to_ground_type] = neighbour
-    connection.name = underground_name
-    local length = get_underground_distance(entity.position, neighbour.position)
-    connection.length = length
-    
-    -- take items from player if placed by hand
-    local count = 0
-    if not is_ghost and not neighbour_is_ghost then
-      local player = game.get_player(event.player_index)
-      if player then
-        count = player.remove_item{name=belt_name, count=length}
-        if count > 0 then
-          player.create_local_flying_text{
-            text = {"", -count, " ", prototypes.item[belt_name].localised_name}, -- TODO icon in text
-            position = {entity.position.x + 1, entity.position.y - 0.5}
-          }
-        end
-        if count ~= length then
-          player.clear_cursor() --this prevents weird auto-placements
-        end
-      end
-    end
-
-    if count ~= length then
-      -- create storage container
-      local container = entity.surface.create_entity{
-        name = underground_name.."-container",
-        position = connection.input.position,
-        force = entity.force,
-        spill = false
-      }
-      connection.container = container
-
-      -- stop the underground if placed by player who doesn't have enough transport belts
-      if not is_ghost and not neighbour_is_ghost then
-        connection.input = stop_belt(connection.input)
-        connection.output = stop_belt(connection.output)
-        storage.belt_pairs_ticking[pos_string(container.position)] = connection
-      end
-
-      if count > 0 then
-        container.get_inventory(defines.inventory.chest).insert({name=belt_name, count=count})
-      end
-      if (count < length) then
-        make_request(container, belt_name, length - count)
-      end
-    end
+    new_connection(player, entity, neighbour, underground_name)
   end
 end)
 
-function new_connection(connection)
+function new_connection(player, entity, neighbour, underground_name, itemstack)
+  local belt_name = transport_belts[underground_name] --related transport belt prototype
+
+  local entity_is_ghost = entity.name == "entity-ghost"
+  local neighbour_is_ghost = neighbour.name == "entity-ghost"
+
+  -- on new connection
+  local connection = {} --{input, output, name, length, container}
+  storage.belt_pairs[pos_string(entity.position)] = connection
+  storage.belt_pairs[pos_string(neighbour.position)] = connection
+  game.print("new connection from "..pos_string(entity.position).." to "..pos_string(neighbour.position))
   
+  connection[entity.belt_to_ground_type] = entity
+  connection[neighbour.belt_to_ground_type] = neighbour
+  connection.name = underground_name
+  local length = get_underground_distance(entity.position, neighbour.position)
+  connection.length = length
+  
+  local belts = 0
+  local trashstack
+  if itemstack and itemstack.name == belt_name then
+    belts = itemstack.count
+  end
+
+  -- manual placement logic
+  if player then
+    if itemstack and itemstack.name ~= belt_name then --refund irrelevant belts to the player
+      trashstack = itemstack
+      itemstack = nil
+    end
+
+    if belts < length then --take belts from the player
+      local count = player.remove_item{name=belt_name, count=length-belts}
+      belts = belts + count
+      itemstack = {name=belt_name, count=belts}
+
+      if count > 0 then --floating text
+        player.create_local_flying_text{
+          text = {"", -count, " ", prototypes.item[belt_name].localised_name}, -- TODO icon in text
+          position = {entity.position.x + 1, entity.position.y - 0.5}
+        }
+      end
+      
+      if belts < length then
+        player.clear_cursor() --clear the cursor if you run out of belts. this prevents weird auto-placements
+      end
+
+    elseif belts > length then --refund excess belts to the player
+      itemstack.count = belts - length
+      trashstack = itemstack
+      itemstack = nil
+      belts = length
+    end
+  end
+
+  if entity_is_ghost or neighbour_is_ghost or belts ~= length then
+    -- create storage container
+    local container = entity.surface.create_entity{
+      name = underground_name.."-container",
+      position = connection.input.position,
+      force = entity.force,
+      spill = false
+    }
+    connection.container = container
+
+    -- stop the underground if placed by player who doesn't have enough transport belts
+    if not entity_is_ghost and not neighbour_is_ghost then
+      connection.input = stop_belt(connection.input)
+      connection.output = stop_belt(connection.output)
+      storage.belt_pairs_ticking[pos_string(container.position)] = connection
+    end
+
+    if itemstack then
+      container.get_inventory(defines.inventory.chest).insert(itemstack)
+    end
+
+    if (belts < length) then
+      make_request(container, belt_name, length - belts) -- TODO fix this
+    end
+  end
+
+  return trashstack
 end
 
 -- when robots builds undergrounds, i check if it still needs transport belts or not
@@ -186,39 +213,33 @@ script.on_event(defines.events.on_player_mined_entity, function(event)
     elseif connection.input.name == connection.name and connection.output.name == connection.name then
       itemstack = {name=transport_belts[connection.name], count=connection.length}
     end
+    -- TODO handle full inventory
 
-    if entity.name ~= "entity-ghost" then --destroy the belt immediately
-      local name = entity.name
-      if stopped then
-        name = string.sub(name, 1, name:len()-8)
-      end
-      event.buffer.insert{name=name, count=1} 
-      entity.destroy()
-    end
-  end
-
-  if itemstack then
-    event.buffer.insert(itemstack)
+    entity.destroy()
   end
 
   if stopped then
     neighbour = start_belt(neighbour)
   end
 
-  -- TODO check neighbour for new connections
+  -- check neighbour for new connections
   local new_neighbour = neighbour.neighbours
   if new_neighbour then
-    game.print(event.tick.." new connection from "..pos_string(neighbour.position).." to "..pos_string(new_neighbour.position))
+    itemstack = new_connection(game.get_player(event.player_index), neighbour, new_neighbour, connection.name, itemstack)
+  end
+
+  if itemstack then
+    event.buffer.insert(itemstack)
   end
 end)
+
+function destroy_connection(connection)
+
+end
 
 script.on_event(defines.events.on_robot_mined_entity, function(event)
   --underground_removed(event.entity, event.buffer)
 end)
-
-function underground_removed(entity, buffer)
-  
-end
 
 function stop_belt(entity)
   entity = entity.surface.create_entity{
