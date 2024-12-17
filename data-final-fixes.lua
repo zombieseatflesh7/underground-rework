@@ -7,23 +7,23 @@ for _, v in pairs(data.raw["transport-belt"]) do
     x.localised_name = {"entity-name." .. name}
     x.localised_description = {"entity-description." .. name}
     x.speed = 1e-308 --speed has to be positive, this is close enough to 0
-    table.insert(x.flags, "not-deconstructable")
-    --table.remove(x.flags, )
+    table.insert(x.flags, "not-deconstructable") --TODO make it deconstructable properly
     data:extend({x,
     {
-        type = "linked-container",
+        type = "container",
         name = name .. "-container",
         flags = {"player-creation", "not-blueprintable"},
         max_health = 1,
-        resistances = resistances_immune,
+        resistances = ub.resistances,
         collision_box = ub.collision_box,
         collision_mask = {layers = {}},
         selection_box = ub.selection_box,
         selectable_in_game = true,
+        selection_priority = 46,
         minable = x.minable,
         inventory_size = 1,
-        inventory_type = "normal",
-        gui_mode = "none"
+        inventory_type = "normal"
+        --gui_mode = "none"
     }
     })
 end

@@ -1,21 +1,34 @@
 script.on_init(function()
-	storage.undergrounds = {}
-  storage.id_counter = 1
+  storage.belt_pairs = {}
+  storage.belt_pairs_ticking = {}
 end)
 
-script.on_nth_tick(5, function()
-  for key, underground in pairs(storage.undergrounds) do
-    local length = get_underground_distance(underground.belt.position, underground.belt.neighbours.position)
-    local inventory = underground.container.get_inventory(defines.inventory.chest)
-    if inventory.get_contents()[1] and inventory.get_contents()[1].count == length then
-      inventory.clear()
-      underground.container.destroy()
-      local pos = position_to_string(underground.belt.neighbours.position)
-      storage.undergrounds[pos].container.destroy()
-      start_belt(underground.belt.neighbours)
-      storage.undergrounds[pos] = nil
-      start_belt(underground.belt)
-      storage.undergrounds[key] = nil
+--[[ belt_pairs
+key: coordinates
+value: input, output, name, length, container
+]]
+
+-- a table of underground belts to their respective transport belt
+local transport_belts = {}
+transport_belts["underground-belt"] = "transport-belt"
+transport_belts["fast-underground-belt"] = "fast-transport-belt"
+transport_belts["express-underground-belt"] = "express-transport-belt"
+
+function fix_storage()
+  
+end
+
+-- TODO rewrite
+script.on_nth_tick(1, function()
+  for key, connection in pairs(storage.belt_pairs_ticking) do
+    local container = connection.container
+    local itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
+    if itemstack and itemstack.name == transport_belts[connection.name] and itemstack.count == connection.length then
+      connection.container.destroy()
+      connection.container = nil
+      connection.input = start_belt(connection.input)
+      connection.output = start_belt(connection.output)
+      storage.belt_pairs_ticking[key] = nil
     end
   end
 end)
@@ -24,115 +37,191 @@ function update_underground(pos)
   
 end
 
-script.on_event(defines.events.on_built_entity, function(event)
-  underground_placed(event.entity, game.get_player(event.player_index))
-end)
+-- handle player placing underground belts + ghosts
+script.on_event(defines.events.on_built_entity, function(event) 
+  local entity = event.entity
+  local underground_name = entity.name --prototype name
 
-script.on_event(defines.events.on_robot_built_entity, function(event)
-  underground_placed(event.entity)
-end)
+  local is_ghost
+  if underground_name == "entity-ghost" and entity.ghost_type == "underground-belt" then
+    is_ghost = true
+    underground_name = entity.ghost_name
+  elseif not (entity.type == "underground-belt") then
+    return
+  end
+  -- entity is an underground belt or a ghost of one
+  
+  local belt_name = transport_belts[underground_name] --related transport belt prototype
+  local neighbour = entity.neighbours --connected underground
+  
+  if neighbour then
+    local neighbour_is_ghost = neighbour.name == "entity-ghost"
+    -- TODO check for existing connection
 
-function underground_placed(entity, player)
-  if entity.type == "underground-belt" then
-    local name = entity.name
-    local neighbour = entity.neighbours
-    if neighbour then
-      local length = get_underground_distance(entity.position, neighbour.position)
-      local count = 0
-      entity = stop_belt(entity)
-      neighbour = stop_belt(neighbour)
+    -- on new connection
+    local connection = {} --{input, output, name, length, container}
+    storage.belt_pairs[pos_string(entity.position)] = connection
+    storage.belt_pairs[pos_string(neighbour.position)] = connection
+    game.print(event.tick.." new connection from "..pos_string(entity.position).." to "..pos_string(neighbour.position))
+    
+    connection[entity.belt_to_ground_type] = entity
+    connection[neighbour.belt_to_ground_type] = neighbour
+    connection.name = underground_name
+    local length = get_underground_distance(entity.position, neighbour.position)
+    connection.length = length
+    
+    -- take items from player if placed by hand
+    local count = 0
+    if not is_ghost and not neighbour_is_ghost then
+      local player = game.get_player(event.player_index)
+      if player then
+        count = player.remove_item{name=belt_name, count=length}
+        if count > 0 then
+          player.create_local_flying_text{
+            text = {"", -count, " ", prototypes.item[belt_name].localised_name}, -- TODO icon in text
+            position = {entity.position.x + 1, entity.position.y - 0.5}
+          }
+        end
+        if count ~= length then
+          player.clear_cursor() --this prevents weird auto-placements
+        end
+      end
+    end
+
+    if count ~= length then
+      -- create storage container
       local container = entity.surface.create_entity{
-        name = name.."-container",
-        position = entity.position,
+        name = underground_name.."-container",
+        position = connection.input.position,
         force = entity.force,
         spill = false
       }
-      container.link_id = storage.id_counter
-      storage.undergrounds[position_to_string(entity.position)] = {belt = entity, container = container}
-      container = entity.surface.create_entity{
-        name = name.."-container",
-        position = neighbour.position,
-        force = neighbour.force,
-        spill = false
-      }
-      container.link_id = storage.id_counter
-      storage.undergrounds[position_to_string(neighbour.position)] = {belt = neighbour, container = container}
-      storage.id_counter = storage.id_counter + 1
+      connection.container = container
 
-      if player then
-        count = player.remove_item({name="transport-belt", count=length})
-        if count > 0 then
-          container.get_inventory(defines.inventory.chest).insert({name="transport-belt", count=count})
-        end
+      -- stop the underground if placed by player who doesn't have enough transport belts
+      if not is_ghost and not neighbour_is_ghost then
+        connection.input = stop_belt(connection.input)
+        connection.output = stop_belt(connection.output)
+        storage.belt_pairs_ticking[pos_string(container.position)] = connection
+      end
+
+      if count > 0 then
+        container.get_inventory(defines.inventory.chest).insert({name=belt_name, count=count})
       end
       if (count < length) then
-        make_request(container, "transport-belt", length - count)
+        make_request(container, belt_name, length - count)
       end
     end
   end
+end)
+
+function new_connection(connection)
+  
 end
 
-script.on_event(defines.events.on_player_mined_entity, function(event)
-  underground_removed(event.entity, event.buffer)
-end)
+-- when robots builds undergrounds, i check if it still needs transport belts or not
+script.on_event(defines.events.on_robot_built_entity, function(event)
+  local entity = event.entity
+  if not (entity.type == "underground-belt") then return end
 
-script.on_event(defines.events.on_robot_mined_entity, function(event)
-  underground_removed(event.entity, event.buffer)
-end)
+  local connection = storage.belt_pairs[pos_string(entity.position)]
+  if not connection then return end
+  connection[entity.belt_to_ground_type] = entity
 
-function underground_removed(entity, buffer)
-  pos = position_to_string(entity.position)
-  -- deconstructing unfinished underground connections
-  if storage.undergrounds[pos] ~= nil then
-    local inventory = entity.get_inventory(defines.inventory.chest)
-    local items = inventory.get_contents()[1]
-    if items then
-      buffer.insert(items)
-    end
-    inventory.clear()
-    local underground = storage.undergrounds[pos]
-    local neighbour = underground.belt.neighbours
-    underground.belt.destroy()
-    storage.undergrounds[pos] = nil
-    if neighbour then 
-      pos = position_to_string(neighbour.position)
-      if storage.undergrounds[pos] then
-        underground = storage.undergrounds[pos]
-        underground.container.destroy()
-        start_belt(underground.belt)
-        storage.undergrounds[pos] = nil
-      end
-    end
-    -- deconstructing completed underground connections
-  elseif entity.type == "underground-belt" then
-    local neighbour = entity.neighbours
-    if neighbour then
-      local length = get_underground_distance(entity.position, neighbour.position)
-      buffer.insert({name="transport-belt", count=length})
-      -- TODO -- refresh neighbouring belt
+  -- underground belts are valid
+  if connection.input.name == connection.name and connection.output.name == connection.name then
+    local container = connection.container
+    local itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
+    -- has the required transport belts
+    if itemstack and itemstack.name == transport_belts[connection.name] and itemstack.count == connection.length then
+      connection.container.destroy()
+      connection.container = nil
+    else
+      connection.input = stop_belt(connection.input)
+      connection.output = stop_belt(connection.output)
+      storage.belt_pairs_ticking[pos_string(container.position)] = connection
     end
   end
+end)
+
+function pos_string(pos)
+  return pos.x.." "..pos.y
 end
 
 function get_underground_distance(pos1, pos2)
   return math.abs(pos1.x - pos2.x) + math.abs(pos1.y - pos2.y)
 end
 
-function position_to_string(pos)
-  return pos.x.." "..pos.y
-end
+-- handle player mining things
+script.on_event(defines.events.on_player_mined_entity, function(event)
+  local entity = event.entity
+  local neighbour
 
-function check_storage()
-  if not storage.undergrounds then
-    storage.undergrounds = {}
+  local connection = storage.belt_pairs[pos_string(entity.position)]
+  if not connection then return end
+  if not (entity == connection.input or entity == connection.output or entity == connection.container) then return end
+  --mined entity is part of an underground connection
+
+  --destroy connection
+  local stopped = false
+  if storage.belt_pairs_ticking[pos_string(connection.input.position)] then
+    storage.belt_pairs_ticking[pos_string(connection.input.position)] = nil
+    stopped = true
   end
-  if not storage.id_counter then
-    storage.id_counter = 1
+  storage.belt_pairs[pos_string(connection.input.position)] = nil
+  storage.belt_pairs[pos_string(connection.output.position)] = nil
+
+  --cleanup
+  local container = connection.container
+  local itemstack
+
+  if entity == container then --mine the container
+    neighbour = connection.output
+    connection.input.destroy()
+  else
+    neighbour = entity.neighbours
+
+    if container then --return connection contents
+      itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
+    elseif connection.input.name == connection.name and connection.output.name == connection.name then
+      itemstack = {name=transport_belts[connection.name], count=connection.length}
+    end
+
+    if entity.name ~= "entity-ghost" then --destroy the belt immediately
+      local name = entity.name
+      if stopped then
+        name = string.sub(name, 1, name:len()-8)
+      end
+      event.buffer.insert{name=name, count=1} 
+      entity.destroy()
+    end
   end
+
+  if itemstack then
+    event.buffer.insert(itemstack)
+  end
+
+  if stopped then
+    neighbour = start_belt(neighbour)
+  end
+
+  -- TODO check neighbour for new connections
+  local new_neighbour = neighbour.neighbours
+  if new_neighbour then
+    game.print(event.tick.." new connection from "..pos_string(neighbour.position).." to "..pos_string(new_neighbour.position))
+  end
+end)
+
+script.on_event(defines.events.on_robot_mined_entity, function(event)
+  --underground_removed(event.entity, event.buffer)
+end)
+
+function underground_removed(entity, buffer)
+  
 end
 
 function stop_belt(entity)
-  return entity.surface.create_entity{
+  entity = entity.surface.create_entity{
     name = entity.name.."-stopped",
     position = entity.position,
     force = entity.force,
@@ -141,6 +230,8 @@ function stop_belt(entity)
     fast_replace = true,
     spill = false
   }
+  -- TODO add custom status 
+  return entity
 end
 
 function start_belt(entity)
