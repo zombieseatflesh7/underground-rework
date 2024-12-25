@@ -7,23 +7,25 @@ for _, v in pairs(data.raw["transport-belt"]) do
     x.localised_name = {"entity-name." .. name}
     x.localised_description = {"entity-description." .. name}
     x.speed = 1e-308 --speed has to be positive, this is close enough to 0
-    table.insert(x.flags, "not-deconstructable") --TODO make it deconstructable properly
-    data:extend({x,
-    {
+    local c = {
         type = "container",
         name = name .. "-container",
-        flags = {"player-creation", "not-blueprintable"},
-        max_health = 1,
-        resistances = ub.resistances,
-        collision_box = ub.collision_box,
+        localised_name = x.localised_name,
+        localised_description = x.localised_description,
+        flags = {"player-creation", "not-blueprintable", "not-deconstructable", "not-upgradable", "no-automated-item-removal", "no-automated-item-insertion"},
+        collision_box = x.collision_box,
+        --collision_mask = {layers = {water_tile=true, floor=true}},
         collision_mask = {layers = {}},
-        selection_box = ub.selection_box,
+        selection_box = x.selection_box,
         selectable_in_game = true,
         selection_priority = 46,
+        max_health = x.max_health,
+        resistances = x.resistances,
         minable = x.minable,
+        fast_replaceable_group = "underground-rework-underground-belt-container",
         inventory_size = 1,
         inventory_type = "normal"
         --gui_mode = "none"
     }
-    })
+    data:extend{x, c}
 end
