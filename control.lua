@@ -1,6 +1,7 @@
 script.on_init(function()
   storage.belt_pairs = {}
   storage.belt_pairs_ticking = {}
+  storage.belt_orphans = {}
 end)
 
 --[[ belt_pairs
@@ -57,7 +58,7 @@ script.on_event(defines.events.on_built_entity, function(event)
   if neighbour then
     -- check for existing connection
     local itemstack
-    local neighbour_connection = storage.belt_pairs[pos_string(neighbour.position)]
+    local neighbour_connection = storage.belt_pairs[pos_string(neighbour)]
     if neighbour_connection then
       if neighbour_connection[entity.belt_to_ground_type] == entity then
         return --duplicate connection
@@ -80,7 +81,7 @@ script.on_event(defines.events.on_built_entity, function(event)
 end)
 
 function new_connection(player, entity, neighbour, underground_name, itemstack)
-  game.print("new connection from "..pos_string(entity.position).." to "..pos_string(neighbour.position))
+  game.print("new connection from "..pos_string(entity).." to "..pos_string(neighbour))
 
   local belt_name = belt_names[underground_name] --related transport belt prototype
 
@@ -88,8 +89,8 @@ function new_connection(player, entity, neighbour, underground_name, itemstack)
   local neighbour_is_ghost = neighbour.name == "entity-ghost"
 
   local connection = {} --{input, output, name, length, container}
-  storage.belt_pairs[pos_string(entity.position)] = connection
-  storage.belt_pairs[pos_string(neighbour.position)] = connection
+  storage.belt_pairs[pos_string(entity)] = connection
+  storage.belt_pairs[pos_string(neighbour)] = connection
   
   connection[entity.belt_to_ground_type] = entity
   connection[neighbour.belt_to_ground_type] = neighbour
@@ -146,7 +147,7 @@ function new_connection(player, entity, neighbour, underground_name, itemstack)
     if not entity_is_ghost and not neighbour_is_ghost then
       connection.input = stop_belt(connection.input)
       connection.output = stop_belt(connection.output)
-      storage.belt_pairs_ticking[pos_string(container.position)] = connection
+      storage.belt_pairs_ticking[pos_string(container)] = connection
     end
 
     if itemstack then
@@ -162,17 +163,17 @@ function new_connection(player, entity, neighbour, underground_name, itemstack)
 end
 
 function break_connection(connection)
-  game.print("breaking connection between "..pos_string(connection.input.position).." and "..pos_string(connection.output.position))
+  game.print("breaking connection between "..pos_string(connection.input).." and "..pos_string(connection.output))
 
   --clear storage values
-  if storage.belt_pairs_ticking[pos_string(connection.input.position)] then
-    storage.belt_pairs_ticking[pos_string(connection.input.position)] = nil
+  if storage.belt_pairs_ticking[pos_string(connection.input)] then
+    storage.belt_pairs_ticking[pos_string(connection.input)] = nil
     -- TODO: handle broken connections as a result of restarting belts
     connection.input = start_belt(connection.input)
     connection.output = start_belt(connection.output)
   end
-  storage.belt_pairs[pos_string(connection.input.position)] = nil
-  storage.belt_pairs[pos_string(connection.output.position)] = nil
+  storage.belt_pairs[pos_string(connection.input)] = nil
+  storage.belt_pairs[pos_string(connection.output)] = nil
 
   --return connection contents
   local container = connection.container
@@ -194,7 +195,7 @@ script.on_event(defines.events.on_robot_built_entity, function(event)
   local entity = event.entity
   if not (entity.type == "underground-belt") then return end
 
-  local connection = storage.belt_pairs[pos_string(entity.position)]
+  local connection = storage.belt_pairs[pos_string(entity)]
   if (not connection) or (not connection.container) then return end
   -- we can assume that there are 2 connected undergrounds and that container is valid
 
@@ -213,7 +214,7 @@ script.on_event(defines.events.on_robot_built_entity, function(event)
       upgrade_container(connection)
     end
   end
-  
+
   if entity.name == connection.name and neighbour.name == connection.name then
     local itemstack = connection.container.get_inventory(defines.inventory.chest).get_contents()[1]
     -- has the required transport belts
@@ -224,7 +225,7 @@ script.on_event(defines.events.on_robot_built_entity, function(event)
     else
       connection.input = stop_belt(connection.input)
       connection.output = stop_belt(connection.output)
-      storage.belt_pairs_ticking[pos_string(connection.container.position)] = connection
+      storage.belt_pairs_ticking[pos_string(connection.container)] = connection
     end
   end
 end)
@@ -235,7 +236,7 @@ script.on_event(defines.events.on_player_mined_entity, function(event)
   local entity = event.entity
   local neighbour
 
-  local connection = storage.belt_pairs[pos_string(entity.position)]
+  local connection = storage.belt_pairs[pos_string(entity)]
   if not connection then return end
   if not (entity == connection.input or entity == connection.output or entity == connection.container) then return end
   --mined entity is part of an underground connection
@@ -247,14 +248,14 @@ script.on_event(defines.events.on_player_mined_entity, function(event)
     end
 
   --destroy connection
-  game.print("Destroying connection between "..pos_string(connection.input.position).." and "..pos_string(connection.output.position))
+  game.print("Destroying connection between "..pos_string(connection.input).." and "..pos_string(connection.output))
   local stopped = false
-  if storage.belt_pairs_ticking[pos_string(connection.input.position)] then
-    storage.belt_pairs_ticking[pos_string(connection.input.position)] = nil
+  if storage.belt_pairs_ticking[pos_string(connection.input)] then
+    storage.belt_pairs_ticking[pos_string(connection.input)] = nil
     stopped = true
   end
-  storage.belt_pairs[pos_string(connection.input.position)] = nil
-  storage.belt_pairs[pos_string(connection.output.position)] = nil
+  storage.belt_pairs[pos_string(connection.input)] = nil
+  storage.belt_pairs[pos_string(connection.output)] = nil
 
   --cleanup
   local container = connection.container
@@ -299,7 +300,7 @@ end)
 script.on_event(defines.events.on_pre_ghost_upgraded, function(event)
   if event.target.type ~= "underground-belt" then return end
 
-  local connection = storage.belt_pairs[pos_string(event.ghost.position)]
+  local connection = storage.belt_pairs[pos_string(event.ghost)]
   local underground_name = event.target.name
   if (not connection) or (connection.name == underground_name) then return end
   -- TODO check for upgraded ghosts on the input side, even if the connection has already been upgraded (mixed connection)
@@ -313,7 +314,7 @@ end)
 script.on_event(defines.events.on_marked_for_upgrade, function(event)
   if event.target.type ~= "underground-belt" then return end
 
-  local connection = storage.belt_pairs[pos_string(event.entity.position)]
+  local connection = storage.belt_pairs[pos_string(event.entity)]
   local underground_name = event.target.name
   if (not connection) or (connection.name == underground_name) then return end
 
@@ -337,12 +338,23 @@ script.on_event(defines.events.on_marked_for_upgrade, function(event)
   make_request_proxy(connection)
 end)
 
-script.on_event(defines.events.on_robot_mined_entity, function(event)
-  --underground_removed(event.entity, event.buffer)
+script.on_event(defines.events.on_pre_ghost_deconstructed, function(event)
+  game.print(event.tick.." pre ghost deconstructed "..pos_string(event.ghost))
 end)
 
-function pos_string(pos)
-  return pos.x.." "..pos.y
+script.on_event(defines.events.on_marked_for_deconstruction, function(event)
+  game.print(event.tick.." marked for deconstruction "..pos_string(event.entity))
+end)
+
+script.on_event(defines.events.on_cancelled_deconstruction, function(event)
+  game.print(event.tick.." cancelled deconstruction "..pos_string(event.entity))
+end)
+
+--script.on_event(defines.events.on_robot_mined_entity, function(event)
+--end)
+
+function pos_string(entity)
+  return entity.position.x.." "..entity.position.y
 end
 
 function get_underground_distance(pos1, pos2)
