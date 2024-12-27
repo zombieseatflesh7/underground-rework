@@ -12,7 +12,7 @@ for _, v in pairs(data.raw["transport-belt"]) do
         name = name .. "-container",
         localised_name = x.localised_name,
         localised_description = x.localised_description,
-        flags = {"player-creation", "not-blueprintable", "not-deconstructable", "not-upgradable", "no-automated-item-removal", "no-automated-item-insertion"},
+        flags = {"player-creation", "not-blueprintable", "not-upgradable", "no-automated-item-removal", "no-automated-item-insertion"},
         collision_box = x.collision_box,
         --collision_mask = {layers = {water_tile=true, floor=true}},
         collision_mask = {layers = {}},
