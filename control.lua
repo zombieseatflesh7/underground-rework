@@ -2,6 +2,7 @@ script.on_init(function()
   storage.belt_pairs = {}
   storage.belt_pairs_ticking = {}
   storage.belt_orphans = {}
+  storage.belt_orphans_ticking = {}
 end)
 
 --[[ belt_pairs
@@ -10,7 +11,7 @@ value: input, output, name, length, container, request
 
 -- belt_orphans 
 key: coordinate string
-value: entity, container, request
+value: belt, container, request
 ]]
 
 -- a table of underground belts to their respective transport belt
@@ -42,17 +43,24 @@ script.on_nth_tick(12, function()
       make_request_proxy(connection)
     end
   end
-end)
 
-script.on_event(defines.events.on_tick, function(event)
- 
+  for key, orphan in pairs(storage.belt_orphans_ticking) do
+    local itemstack = orphan.container.get_inventory(defines.inventory.chest).get_contents()[1]
+    if itemstack and itemstack.count > 0 then
+      make_removal_request(orphan)
+    else
+      orphan.container.destroy()
+      storage.belt_orphans_ticking[key] = nil
+      storage.belt_orphans[key] = nil
+    end
+  end
 end)
 
 function clear_storage()
   storage.belt_pairs = {}
   storage.belt_pairs_ticking = {}
   storage.belt_orphans = {}
-  storage.delayed_update = {}
+  storage.belt_orphans_ticking = {}
 end
 
 -- handle player placing underground belts + ghosts
@@ -66,7 +74,7 @@ script.on_event(defines.events.on_built_entity, function(event)
   -- entity is an underground belt or a ghost of one
   
   local neighbour = entity.neighbours --connected underground
-  if neighbour then
+  if neighbour and neighbour.type == "underground-belt" then
     -- check for existing connection
     local itemstack
     local neighbour_connection = storage.belt_pairs[pos_string(neighbour)]
@@ -78,131 +86,36 @@ script.on_event(defines.events.on_built_entity, function(event)
       end
     end
 
-    local player
-    if entity.type ~= "entity-ghost" then
-      player = game.get_player(event.player_index)
-    end
-
-    itemstack = new_connection(player, entity, neighbour, itemstack)
-
-    if itemstack and player then
-      player.insert(itemstack) -- does not show text / does not handle full inventory
+    if entity.type == "underground-belt" then
+      local player = game.get_player(event.player_index)
+      new_connection(player, entity, neighbour, itemstack)
+    elseif itemstack then
+      make_orphan(neighbour, itemstack)
     end
   end
 end)
 
-function new_connection(player, entity, neighbour, itemstack)
-  game.print("new connection from "..pos_string(entity).." to "..pos_string(neighbour))
-
-  local entity_is_ghost = entity.name == "entity-ghost"
-  local neighbour_is_ghost = neighbour.name == "entity-ghost"
-
-  local underground_name = entity.name
-  if entity_is_ghost then underground_name = entity.ghost_name end
-  local belt_name = belt_names[underground_name] --related transport belt prototype
-
-  local connection = {} --{input, output, name, length, container, request}
-  storage.belt_pairs[pos_string(entity)] = connection
-  storage.belt_pairs[pos_string(neighbour)] = connection
-  
-  connection[entity.belt_to_ground_type] = entity
-  connection[neighbour.belt_to_ground_type] = neighbour
-  connection.name = underground_name
-  local length = get_underground_distance(entity.position, neighbour.position)
-  connection.length = length
-  
-  local belts = 0
-  local trashstack
-  if itemstack and itemstack.name == belt_name then
-    belts = itemstack.count
-  end
-
-  -- manual placement logic
-  if player then
-    if itemstack and itemstack.name ~= belt_name then --refund irrelevant belts to the player
-      trashstack = itemstack
-      itemstack = nil
-    end
-
-    if belts < length then --take belts from the player
-      local count = player.remove_item{name=belt_name, count=length-belts}
-      belts = belts + count
-
-      if belts > 0 then
-        itemstack = {name=belt_name, count=belts}
-      end
-
-      if count > 0 then --floating text
-        player.create_local_flying_text{
-          text = {"", -count, " ", prototypes.item[belt_name].localised_name}, -- TODO icon in text
-          position = {entity.position.x + 1, entity.position.y - 0.5}
-        }
-      end
-      
-      if belts < length then
-        player.clear_cursor() --clear the cursor if you run out of belts. this prevents weird auto-placements
-      end
-
-    elseif belts > length then --refund excess belts to the player
-      itemstack.count = belts - length
-      trashstack = itemstack
-      itemstack = nil
-      belts = length
-    end
-  end
-
-  if entity_is_ghost or neighbour_is_ghost or belts ~= length then
-    -- create storage container
-    local container = spawn_container(connection.input)
-    connection.container = container
-
-    -- stop the underground if placed by player who doesn't have enough transport belts
-    if not entity_is_ghost and not neighbour_is_ghost then
-      connection.input = stop_belt(connection.input)
-      connection.output = stop_belt(connection.output)
-      storage.belt_pairs_ticking[pos_string(container)] = connection
-    end
-
-    if itemstack then
-      container.get_inventory(defines.inventory.chest).insert(itemstack)
-    end
-
-    if (belts ~= length) then
-      make_request_proxy(connection)
-    end
-  end
-
-  return trashstack
-end
-
-function break_connection(connection)
-  game.print("breaking connection between "..pos_string(connection.input).." and "..pos_string(connection.output))
-
-  --clear storage values
-  storage.belt_pairs[pos_string(connection.input)] = nil
-  storage.belt_pairs[pos_string(connection.output)] = nil
-
-  --return connection contents
-  local container = connection.container
-  local itemstack
-
-  if container then 
-    itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
-    container.destroy()
-  elseif connection.input.name == connection.name and connection.output.name == connection.name then
-    itemstack = {name=belt_names[connection.name], count=connection.length}
-  end
-
-  return itemstack
-end
-
--- when robots builds undergrounds, i check if it still needs transport belts or not
 script.on_event(defines.events.on_robot_built_entity, function(event)
   --game.print("on robot built entity")
   local entity = event.entity
   if not (entity.type == "underground-belt") then return end
 
   local connection = storage.belt_pairs[pos_string(entity)]
+  local orphan = storage.belt_orphans[pos_string(entity)]
+
+  if connection then
+    -- TODO upgrade logic
+  elseif orphan then
+    -- TODO also upgrade logic
+  else
+    --create new connection
+    local neighbour = entity.neighbours
+    if neighbour and neighbour.type == "underground-belt" then
+      new_connection(nil, entity, neighbour, nil)
+    end
+  end
+  do return end
+
   if (not connection) or (not connection.container) then return end
   -- we can assume that there are 2 connected undergrounds and that container is valid
 
@@ -237,79 +150,223 @@ script.on_event(defines.events.on_robot_built_entity, function(event)
   end
 end)
 
--- handle player mining things
 script.on_event(defines.events.on_player_mined_entity, function(event)
-  --game.print("on player mined entity")
+  game.print("on player mined entity")
   local entity = event.entity
+
   local neighbour
-
-  local connection = storage.belt_pairs[pos_string(entity)]
-  if not connection then
-    local orphan = storage.belt_orphans[pos_string(entity)]
-    if orphan then orphan_mined(orphan, entity) end
-    return
-  end
-  if not (entity == connection.input or entity == connection.output or entity == connection.container) then return end
-  --mined entity is part of an underground connection
-  if not (connection.input.valid and connection.output.valid) then return end
-
-  local player
-    if entity.type ~= "entity-ghost" then
-      player = game.get_player(event.player_index)
-    end
-
-  --destroy connection
-  game.print("Destroying connection between "..pos_string(connection.input).." and "..pos_string(connection.output))
-  local stopped = false
-  if storage.belt_pairs_ticking[pos_string(connection.input)] then
-    storage.belt_pairs_ticking[pos_string(connection.input)] = nil
-    stopped = true
-  end
-  storage.belt_pairs[pos_string(connection.input)] = nil
-  storage.belt_pairs[pos_string(connection.output)] = nil
-
-  --cleanup
-  local container = connection.container
   local itemstack
 
-  if entity == container then --mine the container
-    neighbour = connection.output
-    connection.input.destroy()
-  else
-    neighbour = entity.neighbours
+  local orphan = storage.belt_orphans[pos_string(entity)]
+  if orphan then
+    orphan_mined(game.get_player(event.player_index), orphan, entity)
+    return
+  end
 
-    if container then --return connection contents
-      itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
-      container.destroy()
-      connection.container = nil
-      connection.request = nil
-    elseif connection.input.name == connection.name and connection.output.name == connection.name then
-      itemstack = {name=belt_names[connection.name], count=connection.length}
+  local connection = storage.belt_pairs[pos_string(entity)]
+  if connection then
+    if not (entity == connection.input or entity == connection.output or entity == connection.container) then return end -- entity not part of this connection
+    if not (connection.input.valid and connection.output.valid) then return end -- don't touch invalid entities
+    --mined entity is part of an underground connection
+
+    --destroy connection
+    game.print("Destroying connection between "..pos_string(connection.input).." and "..pos_string(connection.output))
+    local stopped = false
+    if storage.belt_pairs_ticking[pos_string(connection.input)] then
+      storage.belt_pairs_ticking[pos_string(connection.input)] = nil
+      stopped = true
     end
-    -- TODO handle full inventory
+    storage.belt_pairs[pos_string(connection.input)] = nil
+    storage.belt_pairs[pos_string(connection.output)] = nil
 
+    --cleanup
+    local container = connection.container
+    
+    if entity == container then --mine the container
+      neighbour = connection.output
+      connection.input.destroy()
+    else
+      neighbour = entity.neighbours
+
+      if container then --return connection contents
+        itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
+        container.destroy()
+        connection.container = nil
+        connection.request = nil
+      elseif connection.input.name == connection.name and connection.output.name == connection.name then
+        itemstack = {name=belt_names[connection.name], count=connection.length}
+      end
+      -- TODO handle full inventory
+
+      entity.destroy()
+    end
+
+    if stopped then
+      neighbour = start_belt(neighbour)
+    end
+
+    -- check neighbour for new connections
+    local new_neighbour = neighbour.neighbours
+    if new_neighbour and new_neighbour.type == "underground-belt" then
+      new_connection(game.get_player(event.player_index), neighbour, new_neighbour, itemstack)
+      itemstack = nil
+    end
+
+    if itemstack then
+      event.buffer.insert(itemstack) -- TODO handle full inventory
+    end
+    return
+  end
+
+  if entity.name == "entity-ghost" and entity.ghost_type == "underground-belt" then
+    neighbour = entity.neighbours
+    if not neighbour then return end
     entity.destroy()
+    if neighbour.neighbours and neighbour.neighbours.name ~= "entity-ghost" then
+      new_connection(nil, neighbour, neighbour.neighbours, nil)
+    end
+  end
+end)
+
+local delayed_update = {}
+
+script.on_event(defines.events.on_pre_ghost_deconstructed, function(event)
+  if ignore_next_event or event.ghost.ghost_type ~= "underground-belt" then return end
+  --game.print(event.tick.." pre ghost deconstructed "..pos_string(event.ghost))
+
+  local using_planner = false
+  local cursorstack = game.get_player(event.player_index).cursor_stack
+  if cursorstack and cursorstack.valid_for_read and cursorstack.type == "deconstruction-item" then
+      using_planner = true
   end
 
-  if stopped then
-    neighbour = start_belt(neighbour)
+  -- update neighbour
+  local neighbour = event.ghost.neighbours
+  if neighbour and neighbour.type == "underground-belt" then
+    event.ghost.destroy()
+    if using_planner then
+      table.insert(delayed_update, neighbour)
+    else
+      if neighbour.neighbours and neighbour.neighbours.type == "underground-belt" then
+        new_connection(nil, neighbour, neighbour.neighbours, nil)
+      end
+    end
+  end
+end)
+
+script.on_event(defines.events.on_marked_for_deconstruction, function(event)
+  if ignore_next_event or event.entity.type ~= "underground-belt" then return end
+  --game.print(event.tick.." marked "..event.entity.name.." for deconstruction "..pos_string(event.entity))
+
+  local entity = event.entity
+
+  local connection = storage.belt_pairs[pos_string(event.entity)]
+  if connection and (entity == connection.input or entity == connection.output or entity == connection.container) then
+    local container = connection.container
+    if container and entity == container then
+      entity = connection.input
+    end
+
+    local itemstack = break_connection(connection)
+    if storage.belt_pairs_ticking[pos_string(connection.input)] then
+      storage.belt_pairs_ticking[pos_string(connection.input)] = nil
+    end
+
+    -- make orphaned belt
+    ignore_next_event = true
+    if itemstack then
+      container = spawn_container(entity)
+      container.insert(itemstack)
+      container.order_deconstruction(entity.force, event.player_index)
+      entity = stop_belt(entity)
+      entity.cancel_deconstruction(entity.force)
+
+      storage.belt_orphans[pos_string(entity)] = {belt=entity, container=container}
+      --game.print("new orphan at "..pos_string(entity))
+    else
+      entity = start_belt(entity)
+      entity.order_deconstruction(entity.force, event.player_index, 1)
+    end
+    ignore_next_event = false
+    
+    -- update neighbour (guaranteed to exist if connection is valid)
+    local using_planner = false
+    local cursorstack = game.get_player(event.player_index).cursor_stack
+    if cursorstack and cursorstack.valid_for_read and cursorstack.type == "deconstruction-item" then
+        using_planner = true
+    end
+
+    local neighbour
+    if entity.belt_to_ground_type == "input" then
+      neighbour = connection.output
+    else
+      neighbour = connection.input
+    end
+    if using_planner then
+      table.insert(delayed_update, neighbour)
+    else
+      if neighbour.neighbours and neighbour.neighbours.name ~= "entity-ghost" then
+        new_connection(nil, neighbour, neighbour.neighbours, nil)
+      end
+    end
+    return
   end
 
-  -- check neighbour for new connections
-  local new_neighbour = neighbour.neighbours
-  if new_neighbour then
-    itemstack = new_connection(game.get_player(event.player_index), neighbour, new_neighbour, itemstack)
+  local orphan = storage.belt_orphans[pos_string(entity)]
+  if orphan and (entity == orphan.belt or entity == orphan.container) then
+    ignore_next_event = true
+    storage.belt_orphans_ticking[pos_string(entity)] = nil
+    orphan.container.order_deconstruction(entity.force, event.player_index)
+    orphan.belt.cancel_deconstruction(entity.force)
+    orphan.belt = stop_belt(orphan.belt)
+    ignore_next_event = false
+    return
+  end
+end)
+
+script.on_event(defines.events.on_cancelled_deconstruction, function(event)
+  if ignore_next_event then return end
+  game.print(event.tick.." cancelled deconstruction "..pos_string(event.entity))
+
+  local entity = event.entity
+  local orphan = storage.belt_orphans[pos_string(entity)]
+  if orphan and entity == orphan.container then
+    orphan.belt = start_belt(orphan.belt)
+    entity = orphan.belt
+    make_removal_request(orphan)
   end
 
-  if itemstack then
-    event.buffer.insert(itemstack)
+  if entity.type == "underground-belt" then
+    local neighbour = entity.neighbours --connected underground
+    if neighbour and neighbour.type == "underground-belt" then
+      local itemstack
+      local neighbour_connection = storage.belt_pairs[pos_string(neighbour)]
+      if neighbour_connection then
+        itemstack = break_connection(neighbour_connection)
+      end
+      new_connection(nil, neighbour, entity, itemstack)
+    end
   end
+end)
+
+-- NOTE: always called last when using the planner, which makes it useful as a delayed update
+script.on_event(defines.events.on_player_deconstructed_area, function(event)
+  --game.print(event.tick.." on player deconstruction area")
+  for index, entity in ipairs(delayed_update) do
+    if entity.valid and entity.neighbours and entity.neighbours.name ~= "entity-ghost"
+      and (not storage.belt_pairs[pos_string(entity)]) 
+      and (not (storage.belt_orphans[pos_string(entity)] and storage.belt_orphans[pos_string(entity)].container.to_be_deconstructed() )) then
+      new_connection(nil, entity, entity.neighbours, nil)
+    end
+  end
+  delayed_update = {}
 end)
 
 -- upgrading ghosts
 -- TODO handle downgrades which break belt connections
 script.on_event(defines.events.on_pre_ghost_upgraded, function(event)
   if event.target.type ~= "underground-belt" then return end
+  do return end
 
   local connection = storage.belt_pairs[pos_string(event.ghost)]
   local underground_name = event.target.name
@@ -324,6 +381,7 @@ end)
 -- TODO merge with above
 script.on_event(defines.events.on_marked_for_upgrade, function(event)
   if event.target.type ~= "underground-belt" then return end
+  do return end
 
   local connection = storage.belt_pairs[pos_string(event.entity)]
   local underground_name = event.target.name
@@ -349,83 +407,10 @@ script.on_event(defines.events.on_marked_for_upgrade, function(event)
   make_request_proxy(connection)
 end)
 
-local delayed_update = {}
-
-script.on_event(defines.events.on_pre_ghost_deconstructed, function(event)
-  --game.print(event.tick.." pre ghost deconstructed "..pos_string(event.ghost))
-end)
-
-script.on_event(defines.events.on_marked_for_deconstruction, function(event)
-  --game.print(event.tick.." marked for deconstruction "..pos_string(event.entity))
-  if ignore_next_event then return end
-  if event.entity.type ~= "underground-belt" then return end
-
-  local connection = storage.belt_pairs[pos_string(event.entity)]
-  if not connection then return end
-
-  local itemstack = break_connection(connection)
-  if storage.belt_pairs_ticking[pos_string(connection.input)] then
-    storage.belt_pairs_ticking[pos_string(connection.input)] = nil
-  end
-
-  -- make orphaned belt
-  local entity = event.entity
-  ignore_next_event = true
-  if itemstack then
-    local container = spawn_container(entity)
-    container.insert(itemstack)
-    container.order_deconstruction(entity.force, event.player_index)
-    entity = stop_belt(entity)
-    entity.cancel_deconstruction(entity.force)
-
-    storage.belt_orphans[pos_string(entity)] = {belt=entity, container=container}
-    --game.print("new orphan at "..pos_string(entity))
-  else
-    entity = start_belt(entity)
-    entity.order_deconstruction(entity.force, event.player_index, 1)
-  end
-  ignore_next_event = false
-  
-  -- update neighbour (guaranteed to exist)
-  local neighbour
-  if entity.belt_to_ground_type == "input" then
-    neighbour = connection.output
-  else
-    neighbour = connection.input
-  end
-  table.insert(delayed_update, neighbour)
-end)
-
-script.on_event(defines.events.on_cancelled_deconstruction, function(event)
-  game.print(event.tick.." cancelled deconstruction "..pos_string(event.entity))
-end)
-
--- NOTE: always called last, which makes it useful as a delayed update
-script.on_event(defines.events.on_player_deconstructed_area, function(event)
-  --game.print(event.tick.." on player deconstruction area")
-  for index, entity in ipairs(delayed_update) do
-    if entity.valid and entity.neighbours and (not storage.belt_pairs[pos_string(entity)]) then
-      -- TODO check if new neighbour is an orphaned belt
-      local itemstack = new_connection(nil, entity, entity.neighbours, nil)
-    end
-  end
-  delayed_update = {}
-end)
-
 script.on_event(defines.events.on_robot_mined_entity, function(event)
   local orphan = storage.belt_orphans[pos_string(event.entity)]
-  if orphan then orphan_mined(orphan, event.entity) end
+  if orphan then orphan_mined(nil, orphan, event.entity) end
 end)
-
-function orphan_mined(orphan, entity)
-  if orphan.container == entity then
-    orphan.belt.destroy()
-    storage.belt_orphans[pos_string(entity)] = nil
-    --game.print("destroying orphan at "..pos_string(entity))
-  else
-    assert(false) -- lol
-  end
-end
 
 function pos_string(entity)
   return entity.position.x.." "..entity.position.y
@@ -433,6 +418,173 @@ end
 
 function get_underground_distance(pos1, pos2)
   return math.abs(pos1.x - pos2.x) + math.abs(pos1.y - pos2.y)
+end
+
+function new_connection(player, entity, neighbour, itemstack)
+  if entity.name == "entity-ghost" or neighbour.name == "entity-ghost" then 
+    dump_itemstack(player, entity, itemstack)
+  end
+
+  game.print("new connection from "..pos_string(entity).." to "..pos_string(neighbour))
+
+  local underground_name = entity.name
+  local belt_name = belt_names[underground_name] --related transport belt prototype
+
+  local connection = {} --{input, output, name, length, container, request}
+  storage.belt_pairs[pos_string(entity)] = connection
+  storage.belt_pairs[pos_string(neighbour)] = connection
+  
+  connection[entity.belt_to_ground_type] = entity
+  connection[neighbour.belt_to_ground_type] = neighbour
+  connection.name = underground_name
+  local length = get_underground_distance(entity.position, neighbour.position)
+  connection.length = length
+
+  -- check for orphans
+  local orphan = storage.belt_orphans[pos_string(entity)]
+  if orphan then
+    itemstack = unmake_orphan(orphan) -- NOTE: itemstack will be nil if entity is an orphan, so this is ok
+  end
+
+  orphan = storage.belt_orphans[pos_string(neighbour)]
+  if orphan then
+    local itemstack2 = unmake_orphan(orphan)
+    if itemstack then
+      if itemstack2.name == itemstack.name then
+        itemstack.count = itemstack.count + itemstack2.count
+      else
+        dump_itemstack(player, entity, itemstack2)
+      end
+    else
+      itemstack = itemstack2
+    end
+  end
+
+  local belts = 0
+  if itemstack and itemstack.name == belt_name then
+    belts = itemstack.count
+  end
+
+  -- manual placement logic
+  if player then
+    if itemstack and itemstack.name ~= belt_name then --refund irrelevant belts to the player
+      dump_itemstack(player, entity, itemstack)
+      itemstack = nil
+    end
+
+    if belts < length then --take belts from the player
+      local count = player.remove_item{name=belt_name, count=length-belts}
+      belts = belts + count
+
+      if belts > 0 then
+        itemstack = {name=belt_name, count=belts}
+      end
+
+      if count > 0 then --floating text
+        player.create_local_flying_text{
+          text = {"", -count, " ", prototypes.item[belt_name].localised_name}, -- TODO icon in text
+          position = {entity.position.x + 1, entity.position.y - 0.5}
+        }
+      end
+      
+      if belts < length then
+        player.clear_cursor() --clear the cursor if you run out of belts. this prevents weird auto-placements
+      end
+
+    elseif belts > length then --refund excess belts to the player
+      itemstack.count = belts - length
+      dump_itemstack(player, entity, itemstack)
+      itemstack = nil
+      belts = length
+    end
+  end
+
+  if belts ~= length then
+    -- create storage container
+    local container = spawn_container(connection.input)
+    connection.container = container
+
+    -- stop the underground belt
+    connection.input = stop_belt(connection.input)
+    connection.output = stop_belt(connection.output)
+    storage.belt_pairs_ticking[pos_string(container)] = connection
+
+    if itemstack then
+      itemstack.count = itemstack.count - container.get_inventory(defines.inventory.chest).insert(itemstack)
+      if itemstack.count > 0 then
+        dump_itemstack(player, entity, itemstack)
+      end
+    end
+    make_request_proxy(connection)
+  end
+end
+
+function break_connection(connection)
+  game.print("breaking connection between "..pos_string(connection.input).." and "..pos_string(connection.output))
+
+  --clear storage values
+  storage.belt_pairs[pos_string(connection.input)] = nil
+  storage.belt_pairs[pos_string(connection.output)] = nil
+
+  --return connection contents
+  local container = connection.container
+  local itemstack
+
+  if container then 
+    itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
+    container.destroy()
+  elseif connection.input.name == connection.name and connection.output.name == connection.name then
+    itemstack = {name=belt_names[connection.name], count=connection.length}
+  end
+
+  return itemstack
+end
+
+function make_orphan(entity, itemstack)
+  local container = spawn_container(entity)
+  container.insert(itemstack)
+  local orphan = {belt=entity, container=container}
+  make_removal_request(orphan)
+  storage.belt_orphans[pos_string(entity)] = orphan
+  storage.belt_orphans_ticking[pos_string(entity)] = orphan
+end
+
+function unmake_orphan(orphan)
+  local container = orphan.container
+  local itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
+  container.destroy()
+  storage.belt_orphans[pos_string(orphan.belt)] = nil
+  storage.belt_orphans_ticking[pos_string(orphan.belt)] = nil
+  return itemstack
+end
+
+function orphan_mined(player, orphan, entity)
+  if orphan.container == entity then
+    orphan.belt.destroy()
+    storage.belt_orphans[pos_string(entity)] = nil
+    storage.belt_orphans_ticking[pos_string(entity)] = nil
+  elseif orphan.belt == entity then
+    local itemstack = orphan.container.get_inventory(defines.inventory.chest).get_contents()[1]
+    if itemstack then
+      dump_itemstack(player, entity, itemstack)
+    end
+    orphan.container.destroy()
+    storage.belt_orphans[pos_string(entity)] = nil
+    storage.belt_orphans_ticking[pos_string(entity)] = nil
+  end
+end
+
+function dump_itemstack(player, entity, itemstack)
+  if player then
+    player.insert(itemstack) -- does not show text / does not handle full inventory. TODO fix this
+  else
+    entity.surface.spill_item_stack{
+      position=entity.position,
+      stack=itemstack,
+      force=entity.force,
+      allow_belts=false
+    }
+  end
 end
 
 function spawn_container(entity)
@@ -508,6 +660,30 @@ function make_request_proxy(connection)
   end
 end
 
+function make_removal_request(orphan)
+  local container = orphan.container
+  local request = orphan.request
+  local itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
+  local removal_plan = {}
+
+  if itemstack then
+    removal_plan = make_insert_plan(itemstack.name, itemstack.count)
+  end
+
+  if request and request.valid and request.proxy_target == container then
+    request.removal_plan = removal_plan
+  else
+    orphan.request = container.surface.create_entity{
+      name = "item-request-proxy",
+      position = container.position,
+      force = container.force,
+      target = container,
+      modules = {},
+      removal_plan = removal_plan
+    }
+  end
+end
+
 function make_insert_plan(item, amount)
   return {{
     id = {name = item},
@@ -526,8 +702,8 @@ function clear_request(connection)
   if request and request.valid then
     request.insert_plan = {}
     request.removal_plan = {}
-    connection.request = nil
   end
+  connection.request = nil
 end
 
 function stop_belt(entity)
