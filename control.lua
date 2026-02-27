@@ -25,19 +25,19 @@ container_names["underground-belt-container"] = true
 container_names["fast-underground-belt-container"] = true
 container_names["express-underground-belt-container"] = true
 
-local ignore_next_event = false
-
 -- TODO rewrite
 script.on_nth_tick(12, function()
+  local count = 0
+
   for key, connection in pairs(storage.belt_pairs_ticking) do
+    --game.print("ticking "..key)
+    count = count + 1
     local itemstack = connection.container.get_inventory(defines.inventory.chest).get_contents()[1]
     if itemstack and itemstack.name == belt_names[connection.name] and itemstack.count == connection.length then
       connection.container.destroy()
       connection.container = nil
       connection.request = nil
-      -- TODO: handle broken connections as a result of restarting belts
-      connection.input = start_belt(connection.input)
-      connection.output = start_belt(connection.output)
+      -- TODO: clear status
       storage.belt_pairs_ticking[key] = nil
     else
       make_request_proxy(connection)
@@ -45,6 +45,7 @@ script.on_nth_tick(12, function()
   end
 
   for key, orphan in pairs(storage.belt_orphans_ticking) do
+    count = count + 1
     local itemstack = orphan.container.get_inventory(defines.inventory.chest).get_contents()[1]
     if itemstack and itemstack.count > 0 then
       make_removal_request(orphan)
@@ -54,6 +55,8 @@ script.on_nth_tick(12, function()
       storage.belt_orphans[key] = nil
     end
   end
+
+  if count > 0 then game.print("ticking "..count.." entities") end
 end)
 
 function clear_storage()
@@ -65,12 +68,11 @@ end
 
 -- handle player placing underground belts + ghosts
 script.on_event(defines.events.on_built_entity, function(event) 
-  --game.print("on built entity")
   local entity = event.entity
-  if not (
-    (entity.name == "entity-ghost" and entity.ghost_type == "underground-belt")
-    or (entity.type == "underground-belt")
-    ) then return end
+  if entity.name == "entity-ghost"
+  then game.print(event.tick.." player built ghost at "..pos_string(event.entity))
+  else game.print(event.tick.." player built underground at "..pos_string(event.entity))
+  end
   -- entity is an underground belt or a ghost of one
   
   local neighbour = entity.neighbours --connected underground
@@ -93,18 +95,17 @@ script.on_event(defines.events.on_built_entity, function(event)
       make_orphan(neighbour, itemstack)
     end
   end
-end)
+end, {{filter = "type", type = "underground-belt"}, {filter = "ghost_type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_robot_built_entity, function(event)
-  --game.print("on robot built entity")
+  game.print(event.tick.." robot built underground at "..pos_string(event.entity))
   local entity = event.entity
-  if not (entity.type == "underground-belt") then return end
-
   local connection = storage.belt_pairs[pos_string(entity)]
   local orphan = storage.belt_orphans[pos_string(entity)]
 
-  if connection then
-    -- TODO upgrade logic
+  -- upgrade logic
+  if connection and entity.name == connection.name then
+    connection[entity.belt_to_ground_type] = entity
   elseif orphan then
     -- TODO also upgrade logic
   else
@@ -124,15 +125,11 @@ script.on_event(defines.events.on_robot_built_entity, function(event)
   local neighbour = connection.input
   if entity.belt_to_ground_type == "input" then
     neighbour = connection.output
-    upgrade_container(connection)
   end
   if (not neighbour.valid) and entity.neighbours then -- neighbour was upgraded
     --game.print("neighbour upgraded")
     neighbour = entity.neighbours
     connection[neighbour.belt_to_ground_type] = neighbour
-    if neighbour.belt_to_ground_type == "input" then
-      upgrade_container(connection)
-    end
   end
 
   if entity.name == connection.name and neighbour.name == connection.name then
@@ -143,67 +140,34 @@ script.on_event(defines.events.on_robot_built_entity, function(event)
       connection.container = nil
       connection.request = nil
     else
-      connection.input = stop_belt(connection.input)
-      connection.output = stop_belt(connection.output)
       storage.belt_pairs_ticking[pos_string(connection.container)] = connection
     end
   end
-end)
+end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_player_mined_entity, function(event)
-  game.print("on player mined entity")
   local entity = event.entity
+  if entity.name == "entity-ghost"
+  then game.print(event.tick.." player mined ghost at "..pos_string(event.entity))
+  else game.print(event.tick.." player mined underground at "..pos_string(event.entity))
+  end
 
   local neighbour
   local itemstack
-
   local orphan = storage.belt_orphans[pos_string(entity)]
-  if orphan then
-    orphan_mined(game.get_player(event.player_index), orphan, entity)
-    return
-  end
-
   local connection = storage.belt_pairs[pos_string(entity)]
-  if connection then
-    if not (entity == connection.input or entity == connection.output or entity == connection.container) then return end -- entity not part of this connection
+
+  if orphan then
+    itemstack = orphan_mined(orphan, entity)
+
+  elseif connection then
+    if not (entity == connection.input or entity == connection.output) then return end -- entity not part of this connection
     if not (connection.input.valid and connection.output.valid) then return end -- don't touch invalid entities
     --mined entity is part of an underground connection
 
-    --destroy connection
-    game.print("Destroying connection between "..pos_string(connection.input).." and "..pos_string(connection.output))
-    local stopped = false
-    if storage.belt_pairs_ticking[pos_string(connection.input)] then
-      storage.belt_pairs_ticking[pos_string(connection.input)] = nil
-      stopped = true
-    end
-    storage.belt_pairs[pos_string(connection.input)] = nil
-    storage.belt_pairs[pos_string(connection.output)] = nil
-
-    --cleanup
-    local container = connection.container
-    
-    if entity == container then --mine the container
-      neighbour = connection.output
-      connection.input.destroy()
-    else
-      neighbour = entity.neighbours
-
-      if container then --return connection contents
-        itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
-        container.destroy()
-        connection.container = nil
-        connection.request = nil
-      elseif connection.input.name == connection.name and connection.output.name == connection.name then
-        itemstack = {name=belt_names[connection.name], count=connection.length}
-      end
-      -- TODO handle full inventory
-
-      entity.destroy()
-    end
-
-    if stopped then
-      neighbour = start_belt(neighbour)
-    end
+    itemstack = break_connection(connection)
+    neighbour = entity.neighbours
+    entity.destroy()
 
     -- check neighbour for new connections
     local new_neighbour = neighbour.neighbours
@@ -212,89 +176,48 @@ script.on_event(defines.events.on_player_mined_entity, function(event)
       itemstack = nil
     end
 
-    if itemstack then
-      event.buffer.insert(itemstack) -- TODO handle full inventory
-    end
-    return
-  end
-
-  if entity.name == "entity-ghost" and entity.ghost_type == "underground-belt" then
+  elseif entity.name == "entity-ghost" then
     neighbour = entity.neighbours
-    if not neighbour then return end
     entity.destroy()
-    if neighbour.neighbours and neighbour.neighbours.name ~= "entity-ghost" then
+    if neighbour and neighbour.name ~= "entity-ghost" and neighbour.neighbours and neighbour.neighbours.name ~= "entity-ghost" then
       new_connection(nil, neighbour, neighbour.neighbours, nil)
     end
   end
-end)
 
-local delayed_update = {}
+  if itemstack then
+      event.buffer.insert(itemstack)
+  end
+end, {{filter = "type", type = "underground-belt"}, {filter = "ghost_type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_pre_ghost_deconstructed, function(event)
-  if ignore_next_event or event.ghost.ghost_type ~= "underground-belt" then return end
-  --game.print(event.tick.." pre ghost deconstructed "..pos_string(event.ghost))
-
-  local using_planner = false
-  local cursorstack = game.get_player(event.player_index).cursor_stack
-  if cursorstack and cursorstack.valid_for_read and cursorstack.type == "deconstruction-item" then
-      using_planner = true
-  end
+  game.print(event.tick.." ghost deconstructed at "..pos_string(event.ghost))
 
   -- update neighbour
   local neighbour = event.ghost.neighbours
   if neighbour and neighbour.type == "underground-belt" then
     event.ghost.destroy()
-    if using_planner then
-      table.insert(delayed_update, neighbour)
-    else
-      if neighbour.neighbours and neighbour.neighbours.type == "underground-belt" then
-        new_connection(nil, neighbour, neighbour.neighbours, nil)
-      end
+    if neighbour.neighbours and neighbour.neighbours.type == "underground-belt" then
+      new_connection(nil, neighbour, neighbour.neighbours, nil)
     end
   end
-end)
+end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_marked_for_deconstruction, function(event)
-  if ignore_next_event or event.entity.type ~= "underground-belt" then return end
-  --game.print(event.tick.." marked "..event.entity.name.." for deconstruction "..pos_string(event.entity))
+  game.print(event.tick.." marked for deconstruction at "..pos_string(event.entity))
 
   local entity = event.entity
-
   local connection = storage.belt_pairs[pos_string(event.entity)]
-  if connection and (entity == connection.input or entity == connection.output or entity == connection.container) then
-    local container = connection.container
-    if container and entity == container then
-      entity = connection.input
-    end
-
-    local itemstack = break_connection(connection)
-    if storage.belt_pairs_ticking[pos_string(connection.input)] then
-      storage.belt_pairs_ticking[pos_string(connection.input)] = nil
-    end
-
+  if connection and (entity == connection.input or entity == connection.output) then
     -- make orphaned belt
-    ignore_next_event = true
+    local itemstack = break_connection(connection)
     if itemstack then
-      container = spawn_container(entity)
+      local container = spawn_container(entity)
       container.insert(itemstack)
-      container.order_deconstruction(entity.force, event.player_index)
-      entity = stop_belt(entity)
-      entity.cancel_deconstruction(entity.force)
-
       storage.belt_orphans[pos_string(entity)] = {belt=entity, container=container}
       --game.print("new orphan at "..pos_string(entity))
-    else
-      entity = start_belt(entity)
-      entity.order_deconstruction(entity.force, event.player_index, 1)
     end
-    ignore_next_event = false
     
     -- update neighbour (guaranteed to exist if connection is valid)
-    local using_planner = false
-    local cursorstack = game.get_player(event.player_index).cursor_stack
-    if cursorstack and cursorstack.valid_for_read and cursorstack.type == "deconstruction-item" then
-        using_planner = true
-    end
 
     local neighbour
     if entity.belt_to_ground_type == "input" then
@@ -302,66 +225,37 @@ script.on_event(defines.events.on_marked_for_deconstruction, function(event)
     else
       neighbour = connection.input
     end
-    if using_planner then
-      table.insert(delayed_update, neighbour)
-    else
-      if neighbour.neighbours and neighbour.neighbours.name ~= "entity-ghost" then
-        new_connection(nil, neighbour, neighbour.neighbours, nil)
-      end
+    if neighbour and neighbour.neighbours and neighbour.neighbours.name ~= "entity-ghost" then
+      new_connection(nil, neighbour, neighbour.neighbours, nil)
     end
     return
   end
 
   local orphan = storage.belt_orphans[pos_string(entity)]
-  if orphan and (entity == orphan.belt or entity == orphan.container) then
-    ignore_next_event = true
+  if orphan and (entity == orphan.belt) then
     storage.belt_orphans_ticking[pos_string(entity)] = nil
-    orphan.container.order_deconstruction(entity.force, event.player_index)
-    orphan.belt.cancel_deconstruction(entity.force)
-    orphan.belt = stop_belt(orphan.belt)
-    ignore_next_event = false
-    return
   end
-end)
+end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_cancelled_deconstruction, function(event)
-  if ignore_next_event then return end
   game.print(event.tick.." cancelled deconstruction "..pos_string(event.entity))
 
   local entity = event.entity
   local orphan = storage.belt_orphans[pos_string(entity)]
-  if orphan and entity == orphan.container then
-    orphan.belt = start_belt(orphan.belt)
-    entity = orphan.belt
+  if orphan and entity == orphan.belt then
     make_removal_request(orphan)
   end
 
-  if entity.type == "underground-belt" then
-    local neighbour = entity.neighbours --connected underground
-    if neighbour and neighbour.type == "underground-belt" then
-      local itemstack
-      local neighbour_connection = storage.belt_pairs[pos_string(neighbour)]
-      if neighbour_connection then
-        itemstack = break_connection(neighbour_connection)
-      end
-      new_connection(nil, neighbour, entity, itemstack)
+  local neighbour = entity.neighbours --connected underground
+  if neighbour and neighbour.type == "underground-belt" then
+    local itemstack
+    local neighbour_connection = storage.belt_pairs[pos_string(neighbour)]
+    if neighbour_connection then
+      itemstack = break_connection(neighbour_connection)
     end
+    new_connection(nil, neighbour, entity, itemstack)
   end
-end)
-
--- NOTE: always called last when using the planner, which makes it useful as a delayed update
-script.on_event(defines.events.on_player_deconstructed_area, function(event)
-  --game.print(event.tick.." on player deconstruction area")
-  for index, entity in ipairs(delayed_update) do
-    if entity.valid and entity.neighbours and entity.neighbours.name ~= "entity-ghost"
-      and (not storage.belt_pairs[pos_string(entity)]) 
-      and (not (storage.belt_orphans[pos_string(entity)] and storage.belt_orphans[pos_string(entity)].container.to_be_deconstructed() )) then
-      new_connection(nil, entity, entity.neighbours, nil)
-    end
-  end
-  delayed_update = {}
-end)
-
+end, {{filter = "type", type = "underground-belt"}})
 -- upgrading ghosts
 -- TODO handle downgrades which break belt connections
 script.on_event(defines.events.on_pre_ghost_upgraded, function(event)
@@ -378,42 +272,45 @@ script.on_event(defines.events.on_pre_ghost_upgraded, function(event)
   upgrade_container(connection)
 end)
 
--- TODO merge with above
 script.on_event(defines.events.on_marked_for_upgrade, function(event)
-  if event.target.type ~= "underground-belt" then return end
-  do return end
+  game.print(event.tick.." marked for upgrade at "..pos_string(event.entity))
+  mark_for_upgrade(event.entity, event.target.name)
+end, {{filter = "type", type = "underground-belt"}})
 
-  local connection = storage.belt_pairs[pos_string(event.entity)]
-  local underground_name = event.target.name
-  if (not connection) or (connection.name == underground_name) then return end
+script.on_event(defines.events.on_cancelled_upgrade, function(event)
+  game.print(event.tick.." cancelled upgrade at "..pos_string(event.entity))
+  mark_for_upgrade(event.entity, event.target.name)
+end, {{filter = "type", type = "underground-belt"}})
 
-  connection.name = underground_name
-  clear_request(connection)
-  if not connection.container then -- create container
-    connection.container = spawn_container(connection.input)
-    connection.container.insert{name=belt_names[event.entity.name], count=connection.length}
-    
-    -- stop the underground 
-    if connection.input ~= "entity-ghost" and connection.output ~= "entity-ghost" then
-      connection.input = stop_belt(connection.input)
-      connection.input.order_upgrade{target=underground_name, force=connection.input.force, player=game.get_player(event.player_index)}
-      connection.output = stop_belt(connection.output)
-      connection.output.order_upgrade{target=underground_name, force=connection.output.force, player=game.get_player(event.player_index)}
-      
-      --storage.belt_pairs_ticking[pos_string(container.position)] = connection
+function mark_for_upgrade(entity, upgrade)
+  local connection = storage.belt_pairs[pos_string(entity)]
+  if connection then
+    if connection.name ~= upgrade then
+      -- upgrades happen in pairs. This effectively skips the first upgrade event.
+      connection.name = upgrade
+    elseif connection.input.neighbours == connection.output then
+      new_connection(nil, connection.input, connection.output, break_connection(connection))
+    else
+      -- TODO: handle connection breaking upgrades
+      local itemstack = break_connection(connection)
     end
+  else
+    -- TODO: upgrading orphaned or normal belts
   end
-
-  make_request_proxy(connection)
-end)
+end
 
 script.on_event(defines.events.on_robot_mined_entity, function(event)
+  game.print(event.tick.." robot mined underground at "..pos_string(event.entity))
   local orphan = storage.belt_orphans[pos_string(event.entity)]
-  if orphan then orphan_mined(nil, orphan, event.entity) end
-end)
+  if orphan then 
+    local itemstack = orphan_mined(orphan, event.entity) 
+    if itemstack then event.buffer.insert(itemstack) end
+  end
+end, {{filter = "type", type = "underground-belt"}})
 
 function pos_string(entity)
-  return entity.position.x.." "..entity.position.y
+  return entity.position.x-0.5 .. " " .. entity.position.y-0.5
+  --return entity.unit_number
 end
 
 function get_underground_distance(pos1, pos2)
@@ -421,13 +318,18 @@ function get_underground_distance(pos1, pos2)
 end
 
 function new_connection(player, entity, neighbour, itemstack)
-  if entity.name == "entity-ghost" or neighbour.name == "entity-ghost" then 
-    dump_itemstack(player, entity, itemstack)
+  if (entity.name == "entity-ghost" or neighbour.name == "entity-ghost") then 
+    if itemstack then dump_itemstack(player, entity, itemstack) end
+    return
   end
 
   game.print("new connection from "..pos_string(entity).." to "..pos_string(neighbour))
 
   local underground_name = entity.name
+  if entity.to_be_upgraded() then 
+    local prototype, quality = entity.get_upgrade_target()
+    underground_name = prototype.name
+  end
   local belt_name = belt_names[underground_name] --related transport belt prototype
 
   local connection = {} --{input, output, name, length, container, request}
@@ -503,10 +405,6 @@ function new_connection(player, entity, neighbour, itemstack)
     -- create storage container
     local container = spawn_container(connection.input)
     connection.container = container
-
-    -- stop the underground belt
-    connection.input = stop_belt(connection.input)
-    connection.output = stop_belt(connection.output)
     storage.belt_pairs_ticking[pos_string(container)] = connection
 
     if itemstack then
@@ -523,6 +421,9 @@ function break_connection(connection)
   game.print("breaking connection between "..pos_string(connection.input).." and "..pos_string(connection.output))
 
   --clear storage values
+  if storage.belt_pairs_ticking[pos_string(connection.input)] then
+    storage.belt_pairs_ticking[pos_string(connection.input)] = nil
+  end
   storage.belt_pairs[pos_string(connection.input)] = nil
   storage.belt_pairs[pos_string(connection.output)] = nil
 
@@ -533,11 +434,19 @@ function break_connection(connection)
   if container then 
     itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
     container.destroy()
-  elseif connection.input.name == connection.name and connection.output.name == connection.name then
-    itemstack = {name=belt_names[connection.name], count=connection.length}
+  elseif connection.input.name == connection.output.name then
+    itemstack = {name=belt_names[connection.input.name], count=connection.length}
   end
 
   return itemstack
+end
+
+function get_neighbour(entity, connection)
+  if entity == connection.input then
+    return connection.output
+  else
+    return connection.input
+  end
 end
 
 function make_orphan(entity, itemstack)
@@ -558,20 +467,15 @@ function unmake_orphan(orphan)
   return itemstack
 end
 
-function orphan_mined(player, orphan, entity)
-  if orphan.container == entity then
-    orphan.belt.destroy()
-    storage.belt_orphans[pos_string(entity)] = nil
-    storage.belt_orphans_ticking[pos_string(entity)] = nil
-  elseif orphan.belt == entity then
-    local itemstack = orphan.container.get_inventory(defines.inventory.chest).get_contents()[1]
-    if itemstack then
-      dump_itemstack(player, entity, itemstack)
-    end
+function orphan_mined(orphan, entity)
+  local itemstack
+  if orphan.container then
+    itemstack = orphan.container.get_inventory(defines.inventory.chest).get_contents()[1]
     orphan.container.destroy()
-    storage.belt_orphans[pos_string(entity)] = nil
-    storage.belt_orphans_ticking[pos_string(entity)] = nil
   end
+  storage.belt_orphans[pos_string(entity)] = nil
+  storage.belt_orphans_ticking[pos_string(entity)] = nil
+  return itemstack
 end
 
 function dump_itemstack(player, entity, itemstack)
@@ -588,36 +492,14 @@ function dump_itemstack(player, entity, itemstack)
 end
 
 function spawn_container(entity)
-  local underground_name = entity.name
-  if entity.name == "entity-ghost" then
-    underground_name = entity.ghost_name
-  elseif string.match(entity.name, "-stopped") then
-    underground_name = string.sub(underground_name, 1, underground_name:len()-8)
-  end
   local container = entity.surface.create_entity{
-    name = underground_name.."-container",
+    name = "underground-rework-container",
     position = entity.position,
     force = entity.force,
     spill = false
   }
-  container.destructible = false -- TODO overhaul this
+  container.destructible = false
   return container
-end
-
-function upgrade_container(connection)
-  if connection.container.name == connection.name.."-container" then return end
-  local entity = connection.input
-  local container = entity.surface.create_entity{
-    name = connection.name.."-container",
-    position = entity.position,
-    force = entity.force,
-    fast_replace = true,
-    spill = false
-  }
-  container.destructible = false -- TODO overhaul this
-  connection.container = container
-  clear_request(connection)
-  make_request_proxy(connection)
 end
 
 function make_request_proxy(connection)
@@ -704,35 +586,4 @@ function clear_request(connection)
     request.removal_plan = {}
   end
   connection.request = nil
-end
-
-function stop_belt(entity)
-  if not string.match(entity.name, "-stopped") then
-    entity = entity.surface.create_entity{
-      name = entity.name.."-stopped",
-      position = entity.position,
-      force = entity.force,
-      direction = entity.direction,
-      type = entity.belt_to_ground_type,
-      fast_replace = true,
-      spill = false
-    }
-    -- TODO add custom status 
-  end
-  return entity
-end
-
-function start_belt(entity)
-  if string.match(entity.name, "-stopped") then
-    entity = entity.surface.create_entity{
-      name = string.sub(entity.name, 1, entity.name:len()-8),
-      position = entity.position,
-      force = entity.force,
-      direction = entity.direction,
-      type = entity.belt_to_ground_type,
-      fast_replace = true,
-      spill = false
-    }
-  end
-  return entity
 end
