@@ -58,7 +58,8 @@ script.on_nth_tick(12, function()
     --game.print("ticking "..key)
     count = count + 1
     local itemstack = connection.container.get_inventory(defines.inventory.chest).get_contents()[1]
-    if itemstack and itemstack.name == belt_names[connection.name] and itemstack.count == connection.length then
+    if (itemstack and itemstack.name == belt_names[connection.name] and itemstack.count == connection.length)
+    or (not itemstack and connection.length == 0) then
       connection.container.destroy()
       connection.container = nil
       connection.request = nil
@@ -97,7 +98,15 @@ end, {{filter = "type", type = "underground-belt"}, {filter = "ghost_type", type
 
 script.on_event(defines.events.on_robot_built_entity, function(event)
   game.print(event.tick.." robot built underground at "..pos_string(event.entity))
-  
+  on_automated_built_underground(event)
+end, {{filter = "type", type = "underground-belt"}})
+
+script.on_event(defines.events.on_space_platform_built_entity, function(event)
+  game.print(event.tick.." space platform built underground at "..pos_string(event.entity))
+  on_automated_built_underground(event)
+end, {{filter = "type", type = "underground-belt"}})
+
+function on_automated_built_underground(event)
   local entity = event.entity
   local connection = storage.belt_pairs[pos_string(entity)]
   if not (connection and entity.name == connection.name) then -- when upgrading, the connection is already made before the 2nd call of robot built entity
@@ -106,7 +115,7 @@ script.on_event(defines.events.on_robot_built_entity, function(event)
     if orphan then orphan.belt = entity end
     attempt_new_connection(nil, entity, nil)
   end
-end, {{filter = "type", type = "underground-belt"}})
+end
 
 script.on_event(defines.events.on_player_mined_entity, function(event)
   local entity = event.entity
@@ -256,7 +265,7 @@ function attempt_new_connection(player, entity, returnstack)
       itemstack = returnstack
       returnstack = nil
     end
-    if entity.name == "entity-ghost" then
+    if entity.name == "entity-ghost" and itemstack then
       make_orphan(neighbour, itemstack)
     else
       new_connection(player, entity, neighbour, itemstack)
@@ -267,12 +276,26 @@ end
 
 script.on_event(defines.events.on_robot_mined_entity, function(event)
   game.print(event.tick.." robot mined underground at "..pos_string(event.entity))
+  on_automated_mine_underground(event)
+end, {{filter = "type", type = "underground-belt"}})
 
+script.on_event(defines.events.on_space_platform_mined_entity, function(event)
+  game.print(event.tick.." space platform mined underground at "..pos_string(event.entity))
+  on_automated_mine_underground(event)
+end, {{filter = "type", type = "underground-belt"}})
+
+function on_automated_mine_underground(event)
   local orphan = storage.belt_orphans[pos_string(event.entity)]
   if orphan and (not event.entity.to_be_upgraded()) then -- deconstructing (but not upgrading)
     local itemstack = orphan_mined(orphan, event.entity) 
     if itemstack then event.buffer.insert(itemstack) end -- drop items on ground
   end
+end
+
+script.on_event(defines.events.on_entity_died, function(event)
+  game.print(event.tick.." underground died at "..pos_string(event.entity))
+  local connection = storage.belt_pairs[pos_string(event.entity)]
+  if connection then break_connection(connection) end -- destroy connection contents
 end, {{filter = "type", type = "underground-belt"}})
 
 function pos_string(entity)
@@ -280,7 +303,7 @@ function pos_string(entity)
 end
 
 function get_underground_distance(pos1, pos2)
-  return math.abs(pos1.x - pos2.x) + math.abs(pos1.y - pos2.y)
+  return math.abs(math.floor(pos1.x) - math.floor(pos2.x)) + math.abs(math.floor(pos1.y) - math.floor(pos2.y)) - 1
 end
 
 function new_connection(player, entity, neighbour, itemstack)
@@ -292,12 +315,9 @@ function new_connection(player, entity, neighbour, itemstack)
   game.print("new connection from "..pos_string(entity).." to "..pos_string(neighbour))
 
   local underground_name = entity.name
-  local belt_name = belt_names[underground_name] --related transport belt prototype
+  
 
   local connection = {} --{input, output, name, length, container, request}
-  storage.belt_pairs[pos_string(entity)] = connection
-  storage.belt_pairs[pos_string(neighbour)] = connection
-  
   if (entity.position.x + entity.position.y) < (neighbour.position.x + neighbour.position.y) then
     connection.left = entity
     connection.right = neighbour
@@ -305,9 +325,13 @@ function new_connection(player, entity, neighbour, itemstack)
     connection.left = neighbour
     connection.right = entity
   end
-  connection.name = underground_name
+  connection.name = entity.name
   local length = get_underground_distance(entity.position, neighbour.position)
   connection.length = length
+  storage.belt_pairs[pos_string(entity)] = connection
+  storage.belt_pairs[pos_string(neighbour)] = connection
+
+  local belt_name = belt_names[underground_name] --related transport belt prototype
 
   -- check for orphans
   local orphan = storage.belt_orphans[pos_string(entity)]
@@ -417,7 +441,7 @@ function break_connection(connection)
     storage.belt_pairs_ticking[pos_string(container)] = nil
     itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
     container.destroy()
-  else
+  elseif connection.length > 0 then
     itemstack = {name=belt_names[connection.name], count=connection.length}
   end
 
