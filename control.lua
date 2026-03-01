@@ -19,6 +19,7 @@ script.on_init(function()
   storage.belt_pairs_ticking = {}
   storage.belt_orphans = {}
   storage.belt_orphans_ticking = {}
+  storage.delayed_update = {}
 
   -- add all connected underground belts to storage
   for _, surface in pairs(game.surfaces) do
@@ -30,7 +31,7 @@ script.on_init(function()
       if storage.belt_pairs[pos_string(entity)] then goto continue end
 
       -- add to storage
-      game.print("new connection from "..pos_string(entity).." to "..pos_string(neighbour))
+      --game.print("new connection from "..pos_string(entity).." to "..pos_string(neighbour))
 
       local connection = {} --{left, right, name, length}
       if (entity.position.x + entity.position.y) < (neighbour.position.x + neighbour.position.y) then
@@ -52,11 +53,11 @@ end)
 
 -- TODO optimize?
 script.on_nth_tick(12, function()
-  local count = 0
+  --local count = 0
 
   for key, connection in pairs(storage.belt_pairs_ticking) do
     --game.print("ticking "..key)
-    count = count + 1
+    --count = count + 1
     local itemstack = connection.container.get_inventory(defines.inventory.chest).get_contents()[1]
     if (itemstack and itemstack.name == belt_names[connection.name] and itemstack.count == connection.length)
     or (not itemstack and connection.length == 0) then
@@ -71,7 +72,7 @@ script.on_nth_tick(12, function()
   end
 
   for key, orphan in pairs(storage.belt_orphans_ticking) do
-    count = count + 1
+    --count = count + 1
     local itemstack = orphan.container.get_inventory(defines.inventory.chest).get_contents()[1]
     if itemstack and itemstack.count > 0 then
       make_removal_request(orphan)
@@ -82,27 +83,27 @@ script.on_nth_tick(12, function()
     end
   end
 
-  if count > 0 then game.print("ticking "..count.." entities") end
+  --if count > 0 then game.print("ticking "..count.." entities") end
 end)
 
 -- handle player placing underground belts + ghosts
 script.on_event(defines.events.on_built_entity, function(event) 
   local entity = event.entity
-  if entity.name == "entity-ghost"
+  --[[if entity.name == "entity-ghost"
   then game.print(event.tick.." player built ghost at "..pos_string(event.entity))
   else game.print(event.tick.." player built underground at "..pos_string(event.entity))
-  end
+  end]]
 
   attempt_new_connection(game.get_player(event.player_index), entity, nil)
 end, {{filter = "type", type = "underground-belt"}, {filter = "ghost_type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_robot_built_entity, function(event)
-  game.print(event.tick.." robot built underground at "..pos_string(event.entity))
+  --game.print(event.tick.." robot built underground at "..pos_string(event.entity))
   on_automated_built_underground(event)
 end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_space_platform_built_entity, function(event)
-  game.print(event.tick.." space platform built underground at "..pos_string(event.entity))
+  --game.print(event.tick.." space platform built underground at "..pos_string(event.entity))
   on_automated_built_underground(event)
 end, {{filter = "type", type = "underground-belt"}})
 
@@ -119,10 +120,10 @@ end
 
 script.on_event(defines.events.on_player_mined_entity, function(event)
   local entity = event.entity
-  if entity.name == "entity-ghost"
+  --[[if entity.name == "entity-ghost"
   then game.print(event.tick.." player mined ghost at "..pos_string(event.entity))
   else game.print(event.tick.." player mined underground at "..pos_string(event.entity))
-  end
+  end]]
 
   local neighbour
   local itemstack
@@ -157,7 +158,7 @@ script.on_event(defines.events.on_player_mined_entity, function(event)
 end, {{filter = "type", type = "underground-belt"}, {filter = "ghost_type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_pre_ghost_deconstructed, function(event)
-  game.print(event.tick.." ghost deconstructed at "..pos_string(event.ghost))
+  --game.print(event.tick.." ghost deconstructed at "..pos_string(event.ghost))
 
   -- update neighbour
   local neighbour = event.ghost.neighbours
@@ -170,7 +171,7 @@ script.on_event(defines.events.on_pre_ghost_deconstructed, function(event)
 end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_marked_for_deconstruction, function(event)
-  game.print(event.tick.." marked for deconstruction at "..pos_string(event.entity))
+  --game.print(event.tick.." marked for deconstruction at "..pos_string(event.entity))
 
   local entity = event.entity
   local connection = storage.belt_pairs[pos_string(entity)]
@@ -181,7 +182,7 @@ script.on_event(defines.events.on_marked_for_deconstruction, function(event)
       local container = spawn_container(entity)
       container.insert(itemstack)
       storage.belt_orphans[pos_string(entity)] = {belt=entity, container=container}
-      game.print("new orphan at "..pos_string(entity))
+      --game.print("new orphan at "..pos_string(entity))
     end
     
     -- update neighbour (guaranteed to exist if connection is valid)
@@ -197,7 +198,7 @@ script.on_event(defines.events.on_marked_for_deconstruction, function(event)
 end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_cancelled_deconstruction, function(event)
-  game.print(event.tick.." cancelled deconstruction "..pos_string(event.entity))
+  --game.print(event.tick.." cancelled deconstruction "..pos_string(event.entity))
 
   local entity = event.entity
   local orphan = storage.belt_orphans[pos_string(entity)]
@@ -216,25 +217,25 @@ script.on_event(defines.events.on_cancelled_deconstruction, function(event)
   end
 end, {{filter = "type", type = "underground-belt"}})
 
-local delayed_update = {}
+
 script.on_event(defines.events.on_pre_ghost_upgraded, function(event)
   local ghost = event.ghost
-  game.print(event.tick.." ghost upgraded at "..pos_string(ghost))
+  --game.print(event.tick.." ghost upgraded at "..pos_string(ghost))
   
-  delayed_update[pos_string(ghost)] = ghost
+  storage.delayed_update[pos_string(ghost)] = ghost
   local neighbour = ghost.neighbours
-  if neighbour then delayed_update[pos_string(neighbour)] = neighbour end
+  if neighbour then storage.delayed_update[pos_string(neighbour)] = neighbour end
 end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_tick, function(event)
-  for key, entity in pairs(delayed_update) do
+  for key, entity in pairs(storage.delayed_update) do
     dump_itemstack(nil, entity, attempt_new_connection(nil, entity, nil))
   end
-  delayed_update = {}
+  storage.delayed_update = {}
 end)
 
 script.on_event(defines.events.on_marked_for_upgrade, function(event)
-  game.print(event.tick.." marked for upgrade at "..pos_string(event.entity))
+  --game.print(event.tick.." marked for upgrade at "..pos_string(event.entity))
   local entity = event.entity
   local connection = storage.belt_pairs[pos_string(entity)]
   if connection then 
@@ -244,7 +245,7 @@ script.on_event(defines.events.on_marked_for_upgrade, function(event)
 end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_cancelled_upgrade, function(event)
-  game.print(event.tick.." cancelled upgrade at "..pos_string(event.entity))
+  --game.print(event.tick.." cancelled upgrade at "..pos_string(event.entity))
   attempt_new_connection(nil, event.entity, nil)
 end, {{filter = "type", type = "underground-belt"}})
 
@@ -275,12 +276,12 @@ function attempt_new_connection(player, entity, returnstack)
 end
 
 script.on_event(defines.events.on_robot_mined_entity, function(event)
-  game.print(event.tick.." robot mined underground at "..pos_string(event.entity))
+  --game.print(event.tick.." robot mined underground at "..pos_string(event.entity))
   on_automated_mine_underground(event)
 end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_space_platform_mined_entity, function(event)
-  game.print(event.tick.." space platform mined underground at "..pos_string(event.entity))
+  --game.print(event.tick.." space platform mined underground at "..pos_string(event.entity))
   on_automated_mine_underground(event)
 end, {{filter = "type", type = "underground-belt"}})
 
@@ -293,7 +294,7 @@ function on_automated_mine_underground(event)
 end
 
 script.on_event(defines.events.on_entity_died, function(event)
-  game.print(event.tick.." underground died at "..pos_string(event.entity))
+  --game.print(event.tick.." underground died at "..pos_string(event.entity))
   local connection = storage.belt_pairs[pos_string(event.entity)]
   if connection then break_connection(connection) end -- destroy connection contents
 end, {{filter = "type", type = "underground-belt"}})
@@ -312,7 +313,7 @@ function new_connection(player, entity, neighbour, itemstack)
     return
   end
 
-  game.print("new connection from "..pos_string(entity).." to "..pos_string(neighbour))
+  --game.print("new connection from "..pos_string(entity).." to "..pos_string(neighbour))
 
   local underground_name = entity.name
   
@@ -427,7 +428,7 @@ function new_connection(player, entity, neighbour, itemstack)
 end
 
 function break_connection(connection)
-  game.print("breaking connection between "..pos_string(connection.left).." and "..pos_string(connection.right))
+  --game.print("breaking connection between "..pos_string(connection.left).." and "..pos_string(connection.right))
 
   --clear storage values
   storage.belt_pairs[pos_string(connection.left)] = nil
@@ -464,7 +465,7 @@ function get_upgrade(entity)
 end
 
 function make_orphan(entity, itemstack)
-  game.print("making orphan at "..pos_string(entity))
+  --game.print("making orphan at "..pos_string(entity))
   local container = spawn_container(entity)
   container.insert(itemstack)
   local orphan = {belt=entity, container=container}
@@ -474,7 +475,7 @@ function make_orphan(entity, itemstack)
 end
 
 function unmake_orphan(orphan)
-  game.print("destroying orphan at "..pos_string(orphan.belt))
+  --game.print("destroying orphan at "..pos_string(orphan.belt))
   local container = orphan.container
   local itemstack = container.get_inventory(defines.inventory.chest).get_contents()[1]
   container.destroy()

@@ -1,5 +1,6 @@
 local ub = data.raw["underground-belt"]["underground-belt"]
 local space_age = mods["space-age"]
+local cheaper_recipes = settings.startup["cheaper-recipes"]
 local double_stack = settings.startup["double-stack-size"].value
 local min_length = settings.startup["minimum-length"].value + 1
 
@@ -16,7 +17,7 @@ local c = {
 }
 data:extend{c}
 
-if settings.startup["cheaper-recipes"] then
+if cheaper_recipes then
   local recipe = data.raw["recipe"]["underground-belt"]
   recipe.ingredients[1].amount = 6
   recipe.ingredients[2].amount = 3
@@ -25,7 +26,7 @@ if settings.startup["cheaper-recipes"] then
   recipe = data.raw["recipe"]["express-underground-belt"]
   recipe.ingredients[1].amount = 30
   recipe.ingredients[3].amount = 60
-  if mods["space-age"] then
+  if space_age then
     recipe = data.raw["recipe"]["turbo-underground-belt"]
     recipe.ingredients[1].amount = 15
     recipe.ingredients[3].amount = 60
@@ -40,10 +41,6 @@ if double_stack then
     local item = data.raw["item"][name]
     item.stack_size = item.stack_size * 2
   end
-  --[[if space_age then 
-    data.raw["item"]["express-underground-belt"].weight = 10000 
-    data.raw["item"]["turbo-underground-belt"].weight = 20000
-  end]]
 end
 if min_length > 1 then
   for _, name in pairs(ub_prototypes) do

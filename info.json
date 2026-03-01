@@ -1,10 +1,10 @@
 {
   "name": "underground-rework",
   "version": "1.0",
-  "title": "Underground Belt Rework",
+  "title": "Underground Belts Use Transport Belts",
   "author": "zombieseatflesh7",
-  "homepage": "",
-  "description": "",
+  "homepage": "https://github.com/zombieseatflesh7/underground-rework",
+  "description": "Placing underground belts will consume transport belts equal to the length. Recipes are cheaper and max length is configurable.\n\nNo need to stress about suboptimal underground belt placement, nor carry short and long versions of each underground belt. Just build them as long or short as you feel like.",
   "factorio_version": "2.0",
   "dependencies": [
 	"base >= 2.0"
