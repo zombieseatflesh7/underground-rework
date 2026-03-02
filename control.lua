@@ -9,10 +9,14 @@ value: belt, container, request
 
 -- a table of underground belts to their respective transport belt
 local belt_names = {}
-belt_names["underground-belt"] = "transport-belt"
-belt_names["fast-underground-belt"] = "fast-transport-belt"
-belt_names["express-underground-belt"] = "express-transport-belt"
-belt_names["turbo-underground-belt"] = "turbo-transport-belt"
+-- automatically finds MOST belts from mods.
+for ub_name, ub_prototype in pairs(prototypes.get_entity_filtered{{filter = "type", type = "underground-belt"}}) do
+  local tb_name = string.gsub(ub_name, "underground%-belt", "transport-belt") -- standard naming convention
+  if tb_name == ub_name then tb_name = string.gsub(ub_name, "%-underground", "-belt") end -- lazy naming convention
+  if tb_name ~= ub_name and prototypes.entity[tb_name] then
+    belt_names[ub_name] = tb_name 
+  end
+end
 
 script.on_init(function()
   storage.belt_pairs = {}
@@ -25,7 +29,7 @@ script.on_init(function()
   for _, surface in pairs(game.surfaces) do
     for _, entity in pairs(surface.find_entities_filtered{type = "underground-belt"}) do
       -- look for connected underground belts
-      if entity.name == "entity-ghost" or entity.to_be_upgraded() then goto continue end
+      if entity.name == "entity-ghost" or entity.to_be_upgraded() or (not belt_names[entity.name]) then goto continue end
       local neighbour = entity.neighbours 
       if (not neighbour) or neighbour.name == "entity-ghost" or neighbour.to_be_upgraded() then goto continue end
       if storage.belt_pairs[pos_string(entity)] then goto continue end
@@ -89,6 +93,7 @@ end)
 -- handle player placing underground belts + ghosts
 script.on_event(defines.events.on_built_entity, function(event) 
   local entity = event.entity
+  if not belt_names[entity.name] then return end
   --[[if entity.name == "entity-ghost"
   then game.print(event.tick.." player built ghost at "..pos_string(event.entity))
   else game.print(event.tick.." player built underground at "..pos_string(event.entity))
@@ -109,6 +114,7 @@ end, {{filter = "type", type = "underground-belt"}})
 
 function on_automated_built_underground(event)
   local entity = event.entity
+  if not belt_names[entity.name] then return end
   local connection = storage.belt_pairs[pos_string(entity)]
   if not (connection and entity.name == connection.name) then -- when upgrading, the connection is already made before the 2nd call of robot built entity
     -- fix invalid belt as a result of upgrading
@@ -120,6 +126,7 @@ end
 
 script.on_event(defines.events.on_player_mined_entity, function(event)
   local entity = event.entity
+  if not belt_names[entity.name] then return end
   --[[if entity.name == "entity-ghost"
   then game.print(event.tick.." player mined ghost at "..pos_string(event.entity))
   else game.print(event.tick.." player mined underground at "..pos_string(event.entity))
@@ -158,6 +165,7 @@ script.on_event(defines.events.on_player_mined_entity, function(event)
 end, {{filter = "type", type = "underground-belt"}, {filter = "ghost_type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_pre_ghost_deconstructed, function(event)
+  if not belt_names[event.ghost.ghost_type] then return end
   --game.print(event.tick.." ghost deconstructed at "..pos_string(event.ghost))
 
   -- update neighbour
@@ -171,9 +179,10 @@ script.on_event(defines.events.on_pre_ghost_deconstructed, function(event)
 end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_marked_for_deconstruction, function(event)
-  --game.print(event.tick.." marked for deconstruction at "..pos_string(event.entity))
-
   local entity = event.entity
+  if not belt_names[entity.name] then return end
+  --game.print(event.tick.." marked for deconstruction at "..pos_string(entity))
+
   local connection = storage.belt_pairs[pos_string(entity)]
   if connection and (entity == connection.left or entity == connection.right) then
     -- make orphaned belt
@@ -198,9 +207,10 @@ script.on_event(defines.events.on_marked_for_deconstruction, function(event)
 end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_cancelled_deconstruction, function(event)
-  --game.print(event.tick.." cancelled deconstruction "..pos_string(event.entity))
-
   local entity = event.entity
+  if not belt_names[entity.name] then return end
+  --game.print(event.tick.." cancelled deconstruction "..pos_string(event.entity))
+  
   local orphan = storage.belt_orphans[pos_string(entity)]
   if orphan and entity == orphan.belt then
     make_removal_request(orphan)
@@ -220,6 +230,7 @@ end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_pre_ghost_upgraded, function(event)
   local ghost = event.ghost
+  if not belt_names[ghost.ghost_type] then return end
   --game.print(event.tick.." ghost upgraded at "..pos_string(ghost))
   
   storage.delayed_update[pos_string(ghost)] = ghost
@@ -235,8 +246,10 @@ script.on_event(defines.events.on_tick, function(event)
 end)
 
 script.on_event(defines.events.on_marked_for_upgrade, function(event)
-  --game.print(event.tick.." marked for upgrade at "..pos_string(event.entity))
   local entity = event.entity
+  if not belt_names[entity.name] then return end
+  --game.print(event.tick.." marked for upgrade at "..pos_string(entity))
+  
   local connection = storage.belt_pairs[pos_string(entity)]
   if connection then 
     local itemstack = break_connection(connection) 
@@ -245,6 +258,7 @@ script.on_event(defines.events.on_marked_for_upgrade, function(event)
 end, {{filter = "type", type = "underground-belt"}})
 
 script.on_event(defines.events.on_cancelled_upgrade, function(event)
+  if not belt_names[event.entity.name] then return end
   --game.print(event.tick.." cancelled upgrade at "..pos_string(event.entity))
   attempt_new_connection(nil, event.entity, nil)
 end, {{filter = "type", type = "underground-belt"}})
@@ -286,6 +300,7 @@ script.on_event(defines.events.on_space_platform_mined_entity, function(event)
 end, {{filter = "type", type = "underground-belt"}})
 
 function on_automated_mine_underground(event)
+  if not belt_names[event.entity.name] then return end
   local orphan = storage.belt_orphans[pos_string(event.entity)]
   if orphan and (not event.entity.to_be_upgraded()) then -- deconstructing (but not upgrading)
     local itemstack = orphan_mined(orphan, event.entity) 
@@ -294,6 +309,7 @@ function on_automated_mine_underground(event)
 end
 
 script.on_event(defines.events.on_entity_died, function(event)
+  if not belt_names[event.entity.name] then return end
   --game.print(event.tick.." underground died at "..pos_string(event.entity))
   local connection = storage.belt_pairs[pos_string(event.entity)]
   if connection then break_connection(connection) end -- destroy connection contents
